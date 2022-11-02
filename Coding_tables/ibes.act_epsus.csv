@@ -1,0 +1,13 @@
+Variable Name;Type;Description
+OFTIC;string;Official Ticker (OFTIC)
+TICKER;string;I/B/E/S Ticker (TICKER)
+CUSIP;string;CUSIP/SEDOL (CUSIP)
+CNAME;string;Company Name (CNAME)
+ANNDATS;date;Announce Date, SAS Format (ANNDATS)
+ANNTIMS;double;Announce Time, SAS Format (ANNTIMS)
+ACTDATS;date;Activation Date, SAS Format (ACTDATS)
+ACTTIMS;double;Activation Time, SAS Format (ACTTIMS)
+PENDS;date;Period End Date, SAS Format (PENDS)
+value;double;Value (value)
+CURR_ACT;string;Currency (CURR_ACT)
+USFIRM;double;U.S. Firm (USFIRM=0 if from .INT, and USFIRM=1 if from .US file) (USFIRM)
