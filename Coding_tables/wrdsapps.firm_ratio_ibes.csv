@@ -1,6 +1,6 @@
 Variable Name;Type;Description
-PERMNO;double;PERMNO (PERMNO)
-GVKEY;string;Global Company Key (GVKEY)
+PERMNO;double;PERMNO (PERMNO) - Permanent Number of Securities in Index List
+GVKEY;string;Global Company Key (GVKEY) -  Capital IQ Compustat unique ID
 CUSIP;string;CUSIP IDENTIFIER - HISTORICAL (CUSIP)
 TICKER;string;EXCHANGE TICKER SYMBOL - HISTORICAL (TICKER)
 CAPEI;double;Shillers Cyclically Adjusted P/E Ratio (CAPEI)
@@ -74,3 +74,28 @@ Accrual;double;Accruals/Average Assets (Accrual)
 RD_SALE;double;Research and Development/Sales (RD_SALE)
 adv_sale;double;Avertising Expenses/Sales (adv_sale)
 staff_sale;double;Labor Expenses/Sales (staff_sale)
+mktcap;;Market capitalization in US$1000000
+price;;Stock Price
+gicdesc;;Global Industry Classification Description
+gsector;;Global Industry Classification Code
+be;;Book Equity
+ret_crsp;;Holding Period Return
+public_date;;Date
+adate;;Fiscal year end
+qdate;;Fiscal quarter end
+ffi5_desc;;Fama and French 5 Industries - Description
+ffi5;;Fama and French 5 Industries
+ffi10_desc;;Fama and French 10 Industries - Description
+ffi10;;Fama and French 10 Industries
+ffi12_desc;;Fama and French 12 Industries - Description
+ffi12;;Fama and French 12 Industries
+ffi17_desc;;Fama and French 17 Industries - Description
+ffi17;;Fama and French 17 Industries
+ffi30_desc;;Fama and French 30 Industries - Description
+ffi30;;Fama and French 30 Industries
+ffi38_desc;;Fama and French 38 Industries - Description
+ffi38;;Fama and French 38 Industries
+ffi48_desc;;Fama and French 48 Industries - Description
+ffi48;;Fama and French 48 Industries
+ffi49_desc;;Fama and French 49 Industries - Description
+ffi49;;Fama and French 49 Industries

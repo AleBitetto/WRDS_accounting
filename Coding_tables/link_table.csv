@@ -1,0 +1,48 @@
+Variable Name;Type;Description
+gvkey;;Global Company Key
+conm;;Company Name
+tic;;Ticker Symbol
+cusip;;CUSIP
+cik;;CIK Number
+sic;;Standard Industry Classification Code
+naics;;North American Industry Classification Code
+LINKPRIM;;Primary Link Marker
+LIID;;Security-level Identifier
+LINKTYPE;;Link Type Codd
+LPERMNO;;Historical CRSP PERMNO Link to COMPUSTAT Record
+LPERMCO;;Historical CRSP PERMCO Link to COMPUSTAT Record
+LINKDT;;First Effective Date of Link
+LINKENDDT;;Last Effective Date of Link
+EIN;;Employer Identification Number
+COSTAT;;Postal Code
+DLRSN;;Research Company Reason for Deletion
+PRIUSA;;Primary Issue Tag - USA
+PRICAN;;Primary Issue Tag - Canada
+PRIROW;;Primary Issue Tag - Rest of World
+IDBFLAG;;International/Domestic/Both Indicator
+FIC;;ISO Country Code of Incorporation
+LOC;;ISO Country Code / Headquarters
+INCORP;;State/Province of Incorporation Code
+STATE;;State/Province
+COUNTY;;County Code
+CITY;;City
+CONML;;Company Legal Name
+WEBURL;;Website Address
+PHONE;;Phone Number
+FAX;;Fax Number
+ADD1;;Address Lines 1
+ADD2;;Address Lines 2
+ADD3;;Address Lines 3
+ADD4;;Address Lines 4
+ADDZIP;;Postal Code
+BUSDESC;;Business Description
+ipodate;;Company Initial Public Offering Date
+dldte;;Research Company Deletion Date
+STKO;;Stock Ownership Code
+FYRC;;Fiscal Year End
+GSECTOR;;GICS Sectors
+GGROUP;;GICS Groups
+GIND;;GICS Industries
+GSUBIND;;GICS Sub-industries
+SPCINDCD;;S&P Industry Sector Code - Reference
+SPCSECCD;;S&P Economic Sector Code - Reference

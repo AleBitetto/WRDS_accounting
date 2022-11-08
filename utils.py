@@ -1,4 +1,5 @@
 import pandas as pd
+import re
 
 
 def summary_stats(df=None, date_format='D', n_digits=2):
@@ -97,7 +98,7 @@ def summary_stats(df=None, date_format='D', n_digits=2):
                                 'PERC99': perc[3],
                                 'SUM': val.sum(),
                                 'VALUES_BY_FREQ': ', '.join([str(k) + ': ' + str(v)
-                                                             for k, v in df['bool1'].dropna().value_counts().to_dict().items()])
+                                                             for k, v in df[var].dropna().value_counts().to_dict().items()])
                                }, index = [0])
 
         bool_stats = bool_stats.append(add_row)
@@ -181,11 +182,12 @@ def summary_stats(df=None, date_format='D', n_digits=2):
     return final_stats
 
 
-def stats_with_description(df, df_vardescr_path):
+def stats_with_description(df, df_vardescr_path, col_to_lowercase=True):
     
     df_stats = summary_stats(df)
     df_vardescr = pd.read_csv(df_vardescr_path, sep=';').drop(columns=['Type'])
-    df_vardescr['Variable Name'] = df_vardescr['Variable Name'].str.lower()
+    if col_to_lowercase:
+        df_vardescr['Variable Name'] = df_vardescr['Variable Name'].str.lower()
     df_stats = df_stats.merge(df_vardescr, how='left', left_on='VARIABLE', right_on='Variable Name').drop(columns=['Variable Name'])
     move_col = df_stats.pop('Description')
     df_stats.insert(1, 'Description', move_col)
