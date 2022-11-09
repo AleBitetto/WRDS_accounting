@@ -1,5 +1,9 @@
 import pandas as pd
+import numpy as np
+from timeit import default_timer as timer
+import datetime
 import re
+import itertools
 
 
 def summary_stats(df=None, date_format='D', n_digits=2):
@@ -194,3 +198,56 @@ def stats_with_description(df, df_vardescr_path, col_to_lowercase=True):
     df_stats.fillna('', inplace=True)
     
     return df_stats
+
+
+def match_gvkey(df, df_link_final, col_to_check = ['cusip', 'ticker']):
+    
+    mapping = {'cusip': 'cusip',       # map to df_link_final column names  {'current_table': df_link_final}
+          'ticker': 'tic',
+          'permno': 'LPERMNO'}
+        
+    n_row = df.shape[0]
+    df['xxx_ID'] = np.arange(len(df))
+    start = timer()
+    for col in col_to_check:
+        t_df = df.copy().merge(df_link_final[['gvkey', mapping[col]]], left_on=col, right_on=mapping[col], how='left').groupby('xxx_ID')['gvkey'].agg(xxx=(lambda x: np.unique(x.dropna()).tolist())).reset_index()
+        t_df['type_'+col] = t_df.apply(lambda x: [col] if len(x['xxx']) > 0 else [], axis=1)
+        t_df.rename(columns={'xxx': 'gvkey_' + col}, inplace=True)
+        df=df.merge(t_df, on='xxx_ID', how='left')
+
+    def f(x):
+        x = [i for i in x if len(i) > 0]
+        if len(x) > 0:
+            return x[0]
+        else:
+            return []   
+        
+#     df['gvkey'] = df[['gvkey_' + x for x in col_to_check]].apply(lambda x: np.unique(x.sum()).tolist(), axis = 1)
+#     df['match_type'] = df[['type_' + x for x in col_to_check]].apply(lambda x: np.unique(x.sum()).tolist(), axis = 1)
+    df['gvkey'] = df[['gvkey_' + x for x in col_to_check]].apply(f, axis = 1)
+    df['match_type'] = df[['type_' + x for x in col_to_check]].apply(f, axis = 1)
+    df['gvkey_tot'] = df['gvkey'].str.len()
+    df.drop(columns=['xxx_ID'] + ['gvkey_' + x for x in col_to_check] + ['type_' + x for x in col_to_check], inplace=True)
+    first_cols = ['gvkey', 'match_type', 'gvkey_tot']
+    df = df[first_cols + [x for x in df.columns if x not in first_cols]]
+    
+    if n_row != df.shape[0]:
+        print('#### wrong expected number of rows')
+    
+    # stats
+    print('Total elapsed time:', str(datetime.timedelta(seconds=round(timer()-start))))
+    v, c = np.unique(df.match_type, return_counts=True)
+    print('\n- Matching procedure:')
+    display(pd.DataFrame({'match_type': v, 'count': c}))
+    
+    print('\n- Multiple gvkey count:')
+    display(df.gvkey_tot.value_counts().to_frame().reset_index().rename(columns={'index': 'tot_gvkey', 'gvkey_tot': 'count'}))
+    
+    multiple_gvkey = np.unique(df[df['gvkey_tot'] > 1]['gvkey'])
+    multiple_gvkey_flat = list(itertools.chain(*multiple_gvkey))
+    v,c=np.unique(multiple_gvkey_flat, return_counts=True)
+    multiple_gvkey_check = pd.DataFrame({'val': v, 'count': c}).sort_values(by='count', ascending=False).query('count > 1')
+    if multiple_gvkey_check.shape[0] > 0:
+        print('\n- Multiple gvkey with shared values:', multiple_gvkey_check.shape[0])
+    
+    return df
