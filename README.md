@@ -1,5 +1,5 @@
 # WRDS accounting data
-Python notebook to scrape data from Orbis.
+Python notebook to download data from [Wharton Research Data Services](https://wrds-www.wharton.upenn.edu/)
 
 ### Installation
 
