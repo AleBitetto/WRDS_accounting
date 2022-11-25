@@ -1,0 +1,22 @@
+Variable Name;Type;Description
+PERMNO;;PERMNO
+date;;Names Date
+NAMEENDT;;Names Ending Date
+SHRCD;;Share Code
+EXCHCD;;Exchange Code
+SICCD;;Standard Industrial Classification Code
+NCUSIP;;CUSIP
+TICKER;;Ticker Symbol
+COMNAM;;Company Name
+SHRCLS;;Share Class
+TSYMBOL;;Trading Symbol
+NAICS;;North American Industry Classification System
+PERMCO;;PERMCO
+ISSUNO;;Nasdaq Issue Number
+HEXCD;;Exchange Code Header
+HSICCD;;Standard Industrial Classification Code
+CUSIP;;CUSIP Header
+HSICMG;;Header SIC Major Gorup
+HSICIG;;Header SIC Industry Group
+VOL;;Volume
+RET;;Returns

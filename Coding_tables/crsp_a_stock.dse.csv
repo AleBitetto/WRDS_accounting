@@ -1,0 +1,51 @@
+Variable Name;Type;Description
+event;VARCHAR(8);Event Name
+date;DATE;Date of Observation
+hsicmg;DOUBLE_PRECISION;Header SIC Major Gorup
+hsicig;DOUBLE_PRECISION;Header SIC Industry Group
+comnam;VARCHAR(32);Company Name
+cusip;VARCHAR(8);CUSIP Identifier
+dclrdt;DATE;Declaration Date
+dlamt;DOUBLE_PRECISION;Amount After Delisting
+dlpdt;DATE;Date of Delisting Payment
+dlstcd;DOUBLE_PRECISION;Delisting Code
+hsiccd;DOUBLE_PRECISION;Header SIC Cde
+issuno;DOUBLE_PRECISION;Nasdaq Issue Identifier
+ncusip;VARCHAR(8);Names CUSIP
+nextdt;DATE;Date of Next Available Information
+paydt;DATE;Payment Date
+rcrddt;DATE;Record Date
+shrcls;VARCHAR(1);Share Class
+shrflg;DOUBLE_PRECISION;Number of Shares Outstanding
+ticker;VARCHAR(5);Exchange Ticker Symbol
+permno;DOUBLE_PRECISION;PERMNO
+nameendt;DATE;Names Ending Date
+shrcd;DOUBLE_PRECISION;Share Code
+exchcd;DOUBLE_PRECISION;Exchange Code
+siccd;DOUBLE_PRECISION;Standard Industrial Classification Code
+tsymbol;VARCHAR(10);Trading Symbol
+naics;VARCHAR(7);North American Industry Classification System
+primexch;VARCHAR(1);Primary Exchange
+trdstat;VARCHAR(1);Trading Status
+secstat;VARCHAR(1);Security Status
+permco;DOUBLE_PRECISION;PERMCO
+compno;DOUBLE_PRECISION;Nasdaq Company Number
+hexcd;DOUBLE_PRECISION;Exchange Code Header
+distcd;DOUBLE_PRECISION;Distribution Code
+divamt;DOUBLE_PRECISION;Dividend Cash Amount
+facpr;DOUBLE_PRECISION;Factor to Adjust Price
+facshr;DOUBLE_PRECISION;Factor to Adjust Shares
+acperm;DOUBLE_PRECISION;Acquiring PERMNO
+accomp;DOUBLE_PRECISION;Acquiring PERMCO
+nwperm;DOUBLE_PRECISION;New PERMNO
+nwcomp;DOUBLE_PRECISION;New PERMCO
+dlretx;DOUBLE_PRECISION;Delisting Return Without Dividends
+dlprc;DOUBLE_PRECISION;Delisting Price
+dlret;DOUBLE_PRECISION;Delisting Return
+shrout;DOUBLE_PRECISION;Shares Outstanding
+shrenddt;DATE;Shares Observation End Date
+trtscd;DOUBLE_PRECISION;Nasdaq Traits Code
+trtsendt;DATE;Nasdaq Traits End Date
+nmsind;DOUBLE_PRECISION;Nasdaq National Market Indicator
+mmcnt;DOUBLE_PRECISION;Market Maker Count
+nsdinx;DOUBLE_PRECISION;Nasd Index Code

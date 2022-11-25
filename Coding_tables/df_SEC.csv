@@ -1,0 +1,47 @@
+Variable Name;Type;Description
+adsh;ALPHANUMERIC (nnnnnnnnnn-nn-nnnnnn);Accession Number. The 20- character string formed from the 18-digit number assigned by the SEC to each EDGAR submission.
+cik;NUMERIC;Central Index Key (CIK). Ten digit number assigned by the SEC to each registrant that submits filings.
+name;ALPHANUMERIC;Name of registrant. This corresponds to the name of the legal entity as recorded in EDGAR as of the filing date.
+sic;NUMERIC;Standard Industrial Classification (SIC). Four digit code assigned by the SEC as of the filing date, indicating the registrant's type of business.
+countryba;ALPHANUMERIC;The ISO 3166-1 country of the registrant's business address.
+stprba;ALPHANUMERIC;The state or province of the registrant's business address, if field countryba is US or CA.
+cityba;ALPHANUMERIC;The city of the registrant's business address.
+zipba;ALPHANUMERIC;The zip code of the registrant's business address.
+bas1;ALPHANUMERIC;The first line of the street of the registrant's business address.
+bas2;ALPHANUMERIC;The second line of the street of the registrant's business address.
+baph;ALPHANUMERIC;The phone number of the registrant's business address.
+countryma;ALPHANUMERIC;The ISO 3166-1 country of the registrant's mailing address.
+stprma;ALPHANUMERIC;The state or province of the registrant's mailing address, if field countryma is US or CA.
+cityma;ALPHANUMERIC;The city of the registrant's mailing address.
+zipma;ALPHANUMERIC;The zip code of the registrant's mailing address.
+mas1;ALPHANUMERIC;The first line of the street of the registrant's mailing address.
+mas2;ALPHANUMERIC;The second line of the street of the registrant's mailing address.
+countryinc;ALPHANUMERIC;The country of incorporation for the registrant.
+stprinc;ALPHANUMERIC;The state or province of incorporation for the registrant, if countryinc is US or CA.
+ein;NUMERIC;Employee Identification Number, 9 digit identification number assigned by the Internal Revenue Service to business entities operating in the United States.
+former;ALPHANUMERIC;Most recent former name of the registrant, if any.
+changed;ALPHANUMERIC;Date of change from the former name, if any.
+afs;ALPHANUMERIC;Filer status with the SEC at the time of submission: 1-LAF=Large Accelerated, 2-ACC=Accelerated, 3-SRA=Smaller Reporting Accelerated, 4-NON=Non-Accelerated, 5-SML=Smaller Reporting Filer, NULL=not assigned.
+wksi;BOOLEAN (1 if true and 0 if false);Well Known Seasoned Issuer (WKSI). An issuer that meets specific SEC requirements at some point during a 60-day period preceding the date the issuer satisfies its obligation to update its shelf registration statement.
+fye;ALPHANUMERIC (mmdd);Fiscal Year End Date.
+form;ALPHANUMERIC;The submission type of the registrant's filing.
+period;DATE (yymmdd);Balance Sheet Date.
+fy;YEAR (yyyy);Fiscal Year Focus (as defined in EFM Ch. 6).
+fp;"ALPHANUMERIC (FY,Ql, Q2,Q3,Q4,H , H2,M9,
+Tl, T2,T3,MS, CY)";"Fiscal Period Focus (as defined in EFM Ch.6) within fiscal
+Year.The 10-Q for the 1st, 2nd and 3rd quarters would have a fiscal period focus of Q1,Q2
+(or Hl), and Q3 (or M9) respectively, and a 10-K would have a fiscalperiod focus of FY."
+filed;DATE (yymmdd);The date of the registrant's filing with the Commission.
+accepted;"OATET ME
+(yyyy-mm-dd hh:mm:ss)";"The acceptance date and time of the registrant's fi ng with  the Commission.Fings
+accepted after S:30pm EST are considered filed on the following business day."
+prevrpt;BOOLEAN (1if true and 0 rf false);Previous Report -TRUE indicates that the submission information was  subsequently amended.
+detail;BOOLEAN (1if true and 0 rf false);TRUE indicates that the XBRL submission contains quantitative disclosures within the footnotes and schedules at the  required detaillevel(e.g., each amount).
+instance;"ALPHANUMERIC (e.g.
+abcd-yyyymmdd.xm I)";"The name of the submitted
+XBRL nstance Document (EX- 101.INS) type data fi e. The name often begins with the company ticker symbol."
+nciks;NUMERIC;Number of CentralIndex Keys (C K) of registrants (i.e., business units) includedin the consolidating entity's submitted filing.
+aciks;"ALPHANUMERIC (space
+deimited)";"Additional C!Ks of co- registrants includedin a consolidating ent ty's EDGAR submission,separated by spaces. f there are no other co-registrants  (i.e.,nciks=1), the value of aciksis NULL For a very small number of fi ers,
+the list of co-registrantsis too long to fit in the field. Where this is the case,PARTIAL will
+appear at the end of theist indicating that not allco- registrants' C!Ks areincluded         in the field; users should refer to the complete submission fi e for all CJK information."
