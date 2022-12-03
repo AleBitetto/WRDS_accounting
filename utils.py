@@ -6,6 +6,20 @@ import re
 import itertools
 import functools
 import time
+import os
+import matplotlib.pyplot as plt
+from scipy.stats.mstats import winsorize
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.linear_model import SGDClassifier
+import optuna
+from optuna.visualization import plot_contour
+from optuna.visualization import plot_optimization_history
+from optuna.visualization import plot_param_importances
+import warnings
+from optuna.exceptions import ExperimentalWarning
+import logging
+import sys
+import pickle
 
 
 def summary_stats(df=None, date_format='D', n_digits=2):
@@ -200,12 +214,22 @@ def summary_stats(df=None, date_format='D', n_digits=2):
     return final_stats
 
 
-def stats_with_description(df, df_vardescr_path, col_to_lowercase=True):
+def stats_with_description(df, df_vardescr_path, col_to_lowercase=True, lag_label=None, pc_label=None):
     
     df_stats = summary_stats(df)
     df_vardescr = pd.read_csv(df_vardescr_path, sep=';').drop(columns=['Type'])
     if col_to_lowercase:
         df_vardescr['Variable Name'] = df_vardescr['Variable Name'].str.lower()
+    if lag_label is not None:
+        dd=df_vardescr.copy()
+        dd['Variable Name'] = dd['Variable Name'] + lag_label
+        dd['Description'] = 'Lag of ' + dd['Description']
+        df_vardescr = df_vardescr.append(dd)
+    if pc_label is not None:
+        dd=df_vardescr.copy()
+        dd['Variable Name'] = dd['Variable Name'] + pc_label
+        dd['Description'] = 'Percentage change of ' + dd['Description']
+        df_vardescr = df_vardescr.append(dd)
     df_stats = df_stats.merge(df_vardescr, how='left', left_on='VARIABLE', right_on='Variable Name').drop(columns=['Variable Name'])
     move_col = df_stats.pop('Description')
     df_stats.insert(1, 'Description', move_col)
@@ -419,6 +443,7 @@ def find_consec_year(df, min_consecutive_years = 2, year_col = 'year', col_na_ch
 
     return df
 
+
 def safe_div(x, y):
     
     # 0/0 -> 0
@@ -428,4 +453,607 @@ def safe_div(x, y):
     elif y == 0:
         return (x > 0) - (x < 0)
     else:
-        return x / y
+        return x / y    
+
+    
+def plot_time_range(df, gr_by=['gvkey', 'consec_year_group'], time_var='fyear', label_space=10, fig_size=(17, 10),
+                   min_obs=5, min_count=50, df_with_lagged_var=False):
+
+    plot_data=(df.sort_values(time_var)
+     .groupby(gr_by)
+     .agg(count = (time_var, lambda x: list(x.astype(int).astype(str))[0 if df_with_lagged_var else 1] + '-' +
+                   list(x.astype(int).astype(str))[-1]))
+               ['count'].value_counts().to_frame().reset_index().rename(columns={'index': 'range'})
+               .assign(size = lambda x: x['count'] / x['count'].sum(),
+                      min = lambda x: x['range'].str[:4].astype(int),
+                      max = lambda x: x['range'].str[5:].astype(int),
+                      obs = lambda x: x['max'] - x['min'])
+               .sort_values('obs', ascending = False).reset_index(drop=True)
+    )
+
+    fig, ax = plt.subplots(figsize=fig_size)
+
+    tot_perc = plot_data[(plot_data['obs'] >= min_obs) | (plot_data['count'] >= min_count)]['size'].sum()
+    year_val = sorted(plot_data['min'].append(plot_data['max']).unique())
+    cc=0
+    for index, row in plot_data.iterrows():
+        if row['obs'] >= min_obs or row['count'] >= min_count:
+            y_val = - label_space * cc
+            min_val = row['min']
+            max_val = row['max']
+            if min_val == max_val:
+                ax.scatter(min_val, y_val, linewidth = row['size'] * 150, color = 'blue')
+            else:
+                ax.plot([min_val, max_val], [y_val, y_val], linewidth = row['size'] * 100, color = 'blue',
+                        alpha = (0.5 if row['size'] > 0.1 else 1))
+            ax.text(year_val[0]-1, y_val, str(np.round(row['size'] * 100, 1)) + '% ', size = 10,
+                    verticalalignment= ('top' if cc % 2 == 0 else 'bottom'),
+                   horizontalalignment= ('left' if cc % 2 == 0 else 'right'))
+            cc += 1
+    ax.set_yticks([])
+    ax.set_xlim(year_val[0]-2, year_val[-1]+1)
+    ax.set_xticks(ticks=year_val, labels=year_val)
+    plt.grid(True, axis='x')
+    plt.title('Showing ' + str(np.round(tot_perc*100,1)) + '% of data')
+    plt.show()
+    
+    
+def make_features(df_work, df_original, thrsh_zeros = 0.3, file_name = '', col_keep = [], time_var = '',
+                 CODING_TABLES_FOLDER = '', STATS_FOLDER = ''):
+    
+    '''
+    Create lagged and year percentage change after filling missings with zeros and normalizing by Total Asset.
+    Fundamentals variables are automatically read from "fundamentals_variables_list.csv".
+    
+    Args:
+        df_work: dataset to used for features
+        df_original: dataset used to subset df_work. Needed for lagged variables
+        thrsh_zeros: columns with percentage of zeros >= thrsh_zeros will be removed
+        file_name: name to be used when saving missing values percentage stats
+        col_keep: columns to be kept aside of fundamentals variables
+        time_var: variable to be used as time index
+    '''
+
+    # remove rows with Total Assets = 0
+    row_count = df_work.shape[0]
+    df_work = df_work[df_work['at'] > 0]
+    if df_work.shape[0] != row_count:
+        print('\n- Rows dropped because of zero Total Assets:', row_count - df_work.shape[0])
+
+    # replace missing values with zeros
+    fund_vars = pd.read_csv(os.path.join(CODING_TABLES_FOLDER, 'fundamentals_variables_list.csv'), sep=';')['Variable'].to_list()
+    common_fund_vars = list(set(df_work.columns) & set(fund_vars))
+    df_work.loc[:, common_fund_vars] = df_work.loc[:, common_fund_vars].fillna(0)
+    print('\n- Replacing missing values with zeros')
+
+    # remove empty columns and columns with % of zeros above thrsh_zeros
+    zero_perc = pd.DataFrame(columns=['Variable', 'perc_zeros'])
+    for var in common_fund_vars:
+        zero_perc = zero_perc.append(pd.DataFrame({'Variable': var,
+                                                  'perc_zeros': np.round(sum(df_work[var] == 0) / df_work.shape[0] * 100, 1)},
+                                                 index=[0]))
+    zero_perc = zero_perc.sort_values('perc_zeros').reset_index(drop=True)
+    zero_perc['keep'] = np.where(zero_perc['perc_zeros'] >= thrsh_zeros * 100, '', 'x')
+    col_remove = zero_perc[zero_perc['keep'] == '']['Variable'].to_list()
+    keep_fund_vars = zero_perc[zero_perc['keep'] == 'x']['Variable'].to_list()
+    df_work = df_work.drop(columns=col_remove)
+    print('\n- Removed columns because percentage of zeros is above', thrsh_zeros*100, '%:', len(col_remove))
+    (zero_perc.merge(pd.read_csv(os.path.join(CODING_TABLES_FOLDER, 'fundamentals_variables_list.csv'), sep=';'), on='Variable', how='left')
+     .to_csv(os.path.join(STATS_FOLDER, '01_' + file_name + '_removed_col.csv'), index=False, sep=';'))
+    print('\n- List of variables and percentages saved to', os.path.join(STATS_FOLDER, '01_' + file_name + '_removed_col.csv'))
+    print('- Remaining columns:', len(common_fund_vars) - len(col_remove))
+
+    # evaluate lag
+    print('\n- Evaluating lagged variables')
+    lag_df = (df_original[['main_index'] + keep_fund_vars].copy()
+              .rename(columns=dict(zip(keep_fund_vars, [x + '_lag1' for x in keep_fund_vars])))
+              .rename(columns={'main_index': 'LAG_index'}).fillna(0))
+
+    df_work = df_work.merge(lag_df, on='LAG_index', how='left')[col_keep + keep_fund_vars + [x + '_lag1' for x in keep_fund_vars]]
+    if df_work.drop(columns=col_keep).isna().any().sum() > 0:
+        print('   ##### unmatched lagged variables found')
+
+    # evaluate percentage change over consecutive years
+    print('\n- Evaluating percentage change')
+    for var in keep_fund_vars:
+        df_work = df_work.assign(**{var + '_pc' : lambda x: (x[var] - x[var + '_lag1']) / x[var + '_lag1']})
+    print('- Replacing NaN and Inf with zeros')
+    df_work.loc[:, [x + '_pc' for x in keep_fund_vars]] = df_work.loc[:, [x + '_pc' for x in keep_fund_vars]].fillna(0)
+    df_work.loc[:, [x + '_pc' for x in keep_fund_vars]] = df_work.loc[:, [x + '_pc' for x in keep_fund_vars]].replace([np.inf, -np.inf], 0)
+
+    # normalize by total asset and replace total asset with log()
+    print('\n- Normalizing by Total Asset')
+    norm_var = [x for x in keep_fund_vars if x != 'at']
+    df_work[norm_var] = df_work[norm_var].div(df_work['at'], axis=0)
+    norm_var = [x for x in [x + '_lag1' for x in keep_fund_vars] if x != 'at_lag1']
+    df_work[norm_var] = df_work[norm_var].div(df_work['at_lag1'], axis=0)
+    np.seterr(divide = 'ignore') 
+    df_work['at'] = np.log10(df_work['at'])
+    df_work['at_lag1'] = np.log10(df_work['at_lag1'])
+    np.seterr(divide = 'warn') 
+    print('- Replacing Inf with zeros (some lagged total assets may be zero - only for oldest year available)')
+    df_work.loc[:, [x + '_lag1' for x in keep_fund_vars]] = df_work.loc[:, [x + '_lag1' for x in keep_fund_vars]].fillna(0)
+    df_work.loc[:, [x + '_lag1' for x in keep_fund_vars]] = df_work.loc[:, [x + '_lag1' for x in keep_fund_vars]].replace([np.inf, -np.inf], 0)
+
+    # final check
+    if df_work.drop(columns=col_keep).isna().any().sum() > 0:
+        print('\n##### missing values still present:')
+        print('\n   - '.join(df_work.drop(columns=col_keep).columns.values[df_work.drop(columns=col_keep).isna().sum() > 0]))
+
+    if df_work.drop(columns=col_keep).isin([np.inf, -np.inf]).any().sum() > 0:
+        print('\n##### Infinity values still present:')
+        print('\n   - '.join(df_work.drop(columns=col_keep).columns.values[df_work.drop(columns=col_keep).isin([np.inf, -np.inf]).sum() > 0]))
+        
+    if df_work[col_keep].isna().any().sum() > 0:
+        print('\n##### missing values found in:')
+        miss = df_work[col_keep].isna().sum().loc[lambda x : x > 0]
+        print('\n'.join(['   -' + a + ': ' + str(b) for a, b in zip(miss.index.values, miss.values)]))
+
+    # time stats
+    time_stat = df_work.groupby(time_var).agg(matched = (time_var, lambda x: len(x)))
+    time_stat = time_stat.append(pd.DataFrame({col: time_stat[col].sum() for col in time_stat}, index=['Total'], columns=time_stat.columns))
+    display(time_stat)
+    
+    # reset index
+    df_work = df_work.reset_index(drop=True)
+    print('\n- Indices have been resetted')
+    
+    return df_work
+
+
+def winsorize_and_scale(df, winsorize_perc=0.01, skip_cols=[]):
+    
+    '''
+    Winsorize data and scale by magnitude
+    '''
+    
+    for col in df.columns:
+        if col not in skip_cols:
+            # winsorize
+            df[col] = winsorize(df[col], limits=[winsorize_perc, winsorize_perc])
+
+            magnitude = 10 ** np.ceil(np.log10(max(abs(df[col]))))
+            df[col] = df[col] / magnitude
+
+    return df
+
+
+class customCV:
+    def __init__(self, n_train_years=2, n_test_years=1, rolling_wind_step=1, train_test_offset=0,
+                 year_variable='fyear', back_ward=True, show_info=True):
+        '''
+        back_ward: if True backward evaluates test-train from last available year,
+                    otherwise forward evaluates from oldest year
+        '''
+        
+        self.n_train_years=n_train_years
+        self.n_test_years=n_test_years 
+        self.rolling_wind_step=rolling_wind_step
+        self.train_test_offset=train_test_offset
+        self.year_variable = year_variable
+        self.back_ward=back_ward     
+        self.show_info=show_info
+
+    def determine_n_split(self, X):
+        # determine number of splits
+        
+        avail_year = np.sort(X[self.year_variable].unique())
+        cont=True
+        split_batch = []
+        if self.back_ward:
+            end=len(avail_year)
+            while cont:
+                test_yr = range(end - self.n_test_years , end)
+                train_yr = range(end - self.n_test_years - self.train_test_offset - self.n_train_years,
+                                 end - self.n_test_years - self.train_test_offset)
+                if min(train_yr) < 0:
+                    cont = False
+                else:
+                    end -= self.rolling_wind_step
+                    split_batch.append([avail_year[train_yr], avail_year[test_yr]])
+            split_batch.reverse()
+
+        else:
+            start=0
+            while cont:
+                train_yr = range(start, start + self.n_train_years)
+                test_yr = range(start + self.n_train_years + self.train_test_offset,
+                                start + self.n_train_years + self.train_test_offset + self.n_test_years)
+                if min(test_yr) >= len(avail_year):
+                    cont = False
+                else:
+                    start += self.rolling_wind_step
+                    split_batch.append([avail_year[train_yr], avail_year[test_yr]])
+        
+        return split_batch
+
+        
+    def split(self, X, y=None, groups=None):
+        
+        split_batch = self.determine_n_split(X)
+        for i in range(len(split_batch)):
+            train_idx = np.where(X[self.year_variable].isin(split_batch[i][0]))[0].astype(int)
+            test_idx = np.where(X[self.year_variable].isin(split_batch[i][1]))[0].astype(int)
+            if self.show_info:
+                print('Split', i+1, 'Train:', split_batch[i][0], '('+str(len(train_idx))+' obs)',
+                      '   Test:', split_batch[i][1], '('+str(len(test_idx))+' obs)')
+            yield train_idx, test_idx
+
+    def get_n_splits(self, X, y=None, groups=None):
+        return len(self.determine_n_split(X))
+    
+   
+def to_labels(pos_probs, threshold):
+    # apply threshold to positive probabilities to create labels
+    return (pos_probs >= threshold).astype('int')
+            
+            
+def eval_score(measure, true_lab, pred_lab=None, pred_proba=None, threshold=None):
+            
+            '''
+            Evaluates all metrics with safe mode for zero _division.
+            If "threshold" is provided, pred_proba are converted to labels.
+            '''
+      
+            if threshold is not None:
+                if pred_proba is None:
+                    raise ValueError('If "threshold" is provided, "pred_proba" is expected.')
+                pred_lab = to_labels(pred_proba, threshold)
+            
+            if threshold is None and pred_lab is None and pred_proba is None:
+                raise ValueError('If "threshold" is not provided, "pred_lab" or "pred_proba" is expected.')
+            
+            if measure.__name__ in ['f1_score', 'precision_score', 'recall_score']:
+                
+                out = measure(true_lab, pred_lab, zero_division=0)
+                
+            if measure.__name__ in ['roc_auc_score']:
+        
+                out = measure(true_lab, pred_proba)
+            
+            if measure.__name__ in ['accuracy_score']:
+        
+                out = measure(true_lab, pred_lab)
+            
+            return out
+        
+
+def evaluate_score_df(measure, true_lab_train, true_lab_valid, true_lab_test,
+                      pred_lab_train=None, pred_lab_valid=None, pred_lab_test=None,
+                      pred_proba_train=None, pred_proba_valid=None, pred_proba_test=None,
+                      threshold=None, split_i=None):
+
+    '''
+    Creates DataFrame row with optimal and 0.5 threshold, if provided, on train, validation and test.
+    '''
+
+    # without threshold and only probabilities
+    if measure.__name__ in ['roc_auc_score']:
+        add_row = pd.DataFrame({'split': split_i,
+                                'train_best': eval_score(measure, true_lab=true_lab_train, pred_proba=pred_proba_train),
+                                'valid_best': eval_score(measure, true_lab=true_lab_valid, pred_proba=pred_proba_valid),
+                                'test_best': eval_score(measure, true_lab=true_lab_test, pred_proba=pred_proba_test)}, index=[split_i])
+
+    # with threshold
+    if measure.__name__ in ['f1_score', 'accuracy_score', 'precision_score', 'recall_score']:
+        add_row = pd.DataFrame({'split': split_i,
+                                'train_best': eval_score(measure, true_lab=true_lab_train, pred_proba=pred_proba_train, threshold=threshold),
+                                'valid_best': eval_score(measure, true_lab=true_lab_valid, pred_proba=pred_proba_valid, threshold=threshold),
+                                'test_best': eval_score(measure, true_lab=true_lab_test, pred_proba=pred_proba_test, threshold=threshold),
+                                'best_thresh': threshold,
+                                'train_05': eval_score(measure, true_lab=true_lab_train, pred_proba=pred_proba_train, threshold=0.5),
+                                'valid_05': eval_score(measure, true_lab=true_lab_valid, pred_proba=pred_proba_valid, threshold=0.5),
+                                'test_05': eval_score(measure, true_lab=true_lab_test, pred_proba=pred_proba_test, threshold=0.5)}, index=[split_i])                    
+                                    
+    return add_row 
+
+
+def predict_cv_classifier(df, model=None, measure=None, cv_iterator=None, out_of_sample_years=1,
+                          time_var='fyear', add_measure=[], return_model=False, show_split=False):
+
+    '''
+    Evaluates performance for each fold for a binary classifier. Cross validation requires "time_var" variable
+    to split according to years. Threshold optimization is performed on the validation set using "measure".
+    
+    Args:
+        - df: dataframe with target 'y', "time_var" for years and other input variables
+        - model: classification model
+        - measure: performance measure (function). Used to evaluate optimal threshold.
+        - cv_iterator: iterator for cross-validation
+        - out_of_sample_years: number of years to evaluate out-of-sample performance
+        - time_var: string for year variable
+        - add_measure: list of additional performance measures (function) to be evaluated with optimal threshold.
+        - return_model: if True returns dictionary of fitted models
+        - show_split: if True only prints splits and skip everything else
+        
+    Return:
+        - df_perf: dataframe with ['split', 'train_best', 'valid_best', 'test_baset', 'best_thresh',
+                    'train_05', 'valid_05', 'test_05'], where _best refers to performance with threshold optimization, _05 without
+        - fitted_models: dictionary of models fitted on every split
+        - df_perf_add: dictionary of dataframe of same shape of df_perf evaluated on each measure in add_measure
+    '''
+    
+    # evaluate out-of-sample
+    avail_year = np.sort(df[time_var].unique())
+    year_to_remove = avail_year[-out_of_sample_years:]    
+    
+    df_perf = pd.DataFrame()
+    df_perf_add = {m.__name__: pd.DataFrame() for m in add_measure}
+    cv_iterator.show_info=False
+    fitted_models = {}
+    df_fit = df.copy()[~df[time_var].isin(year_to_remove)]  # skip year_to_remove, keep in mind .iloc is used below
+    thresholds = np.arange(0, 1, 0.001)
+    scores_valid = pd.DataFrame(index=thresholds)
+    pred_list={}
+    for split_i, (train_idx, valid_idx) in enumerate(cv_iterator.split(df_fit)):
+
+        # create train, validation and test (out-of-sample)
+        X_train = df_fit.drop(columns=['y', time_var]).iloc[train_idx]
+        y_train = df_fit['y'].iloc[train_idx]
+        X_valid = df_fit.drop(columns=['y', time_var]).iloc[valid_idx]
+        y_valid = df_fit['y'].iloc[valid_idx]
+        year_test_start = np.where(avail_year == df_fit[time_var].iloc[valid_idx].max())[0][0] + 1
+        test_idx = np.where(df[time_var].isin(avail_year[year_test_start:(year_test_start+out_of_sample_years)]))[0]
+        X_test = df.drop(columns=['y', time_var]).iloc[test_idx]    # test_idx is extracted from df, wih .iloc
+        y_test = df['y'].iloc[test_idx]
+
+        if show_split:
+            print('Split', split_i+1, 'Train:', np.sort(df_fit[time_var].iloc[train_idx].unique()), '('+str(len(train_idx))+' obs)',
+                 '   Validation:', np.sort(df_fit[time_var].iloc[valid_idx].unique()), '('+str(len(valid_idx))+' obs)',
+                 '   Test:', np.sort(df[time_var].iloc[test_idx].unique()), '('+str(len(test_idx))+' obs)')
+            continue
+
+        # fit model
+        fit_model = model.fit(X_train,y=y_train)
+        if return_model:
+            fitted_models['split_'+str(split_i)] = fit_model
+        y_pred_train = model.predict_proba(X_train)[:, 1]
+        y_pred_valid = model.predict_proba(X_valid)[:, 1]
+        y_pred_test = model.predict_proba(X_test)[:, 1]
+
+        pred_list['split_'+str(split_i)] = {'y_train': y_train, 'y_valid': y_valid, 'y_test': y_test,
+                                            'y_pred_train': y_pred_train, 'y_pred_valid': y_pred_valid,
+                                            'y_pred_test': y_pred_test}
+        # evaluate threshold scores
+        scores_valid = scores_valid.merge(pd.DataFrame({'split_'+str(split_i):
+                                                        [measure(y_valid, to_labels(y_pred_valid, t)) for t in thresholds]},
+                                                       index=thresholds), left_index=True, right_index=True, how='left')
+
+    # evaluate best threshold over all splits
+    best_thresh = thresholds[np.argmax(scores_valid.mean(axis=1))]
+
+    # save results and additional measures
+    for split_i in range(len(pred_list)):
+
+        y_train = pred_list['split_'+str(split_i)]['y_train']
+        y_valid = pred_list['split_'+str(split_i)]['y_valid']
+        y_test = pred_list['split_'+str(split_i)]['y_test']
+        y_pred_train = pred_list['split_'+str(split_i)]['y_pred_train']
+        y_pred_valid = pred_list['split_'+str(split_i)]['y_pred_valid']
+        y_pred_test = pred_list['split_'+str(split_i)]['y_pred_test']
+
+        df_perf = df_perf.append(evaluate_score_df(measure, true_lab_train=y_train, true_lab_valid=y_valid,
+                                                   true_lab_test=y_test, pred_proba_train=y_pred_train,
+                                                   pred_proba_valid=y_pred_valid, pred_proba_test=y_pred_test,
+                                                   threshold=best_thresh, split_i=split_i))
+
+        if len(add_measure) > 0:
+            for m in add_measure:
+
+                df_perf_add[m.__name__] = df_perf_add[m.__name__].append(
+                                                evaluate_score_df(m, true_lab_train=y_train, true_lab_valid=y_valid,
+                                                                  true_lab_test=y_test, pred_proba_train=y_pred_train,
+                                                                  pred_proba_valid=y_pred_valid, pred_proba_test=y_pred_test,
+                                                                  threshold=best_thresh, split_i=split_i))
+    
+    return df_perf, fitted_models, pred_list, df_perf_add
+
+
+def make_model_name(tune_params):
+    
+    return '-'.join([k+str(tune_params[k]) for k in sorted(tune_params.keys())])
+
+
+class Objective:
+    def __init__(self, df, measure, cv_iterator, model_type, out_of_sample_years, time_var='fyear',
+                 model_save_path=None, add_measure=[]):
+        # Hold this implementation specific arguments as the fields of the class.
+        self.df = df
+        self.measure = measure
+        self.cv_iterator = cv_iterator
+        self.model_type = model_type
+        self.out_of_sample_years = out_of_sample_years
+        self.time_var = time_var
+        self.model_save_path = model_save_path
+        self.add_measure = add_measure
+
+    def __call__(self, trial):
+        # Calculate an objective value by using the extra arguments.
+        
+        # print and update iter count
+        try:
+            with open('iter.pkl', 'rb') as handle:
+                iters=pickle.load(handle)
+            iters['iter'] += 1
+            iters['avg_time'] = (iters['avg_time'] + (timer()-iters['time'])) / 2
+            iters['time'] = timer()
+            print('Trial', iters['iter'], '/', iters['tot_iter'], '    avg elapsed time: ',
+                  str(datetime.timedelta(seconds=round(iters['avg_time']))), end='\r')
+            with open('iter.pkl', 'wb') as handle:
+                pickle.dump(iters, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        except:
+            pass
+        
+        # settings
+        if self.model_type == 'RandomForest':
+            
+            # define parameters
+            tune_params = {'n_estimators': trial.suggest_int('n_estimators', 10, 2000, log=True),
+                           'min_samples_split': trial.suggest_int('min_samples_split', 2, 300, log=True),
+                           'max_features': trial.suggest_int('max_features', 10, self.df.shape[1] - 3)}
+        
+            # define model
+            model = RandomForestClassifier(bootstrap = False, class_weight = 'balanced',
+                                           random_state = 666, n_jobs = -1,
+                                           **tune_params)
+            
+        if self.model_type == 'GradientBoost':
+            
+            # define parameters
+            tune_params = {'n_estimators': trial.suggest_int('n_estimators', 10, 2000, log=True),
+                           'min_samples_split': trial.suggest_int('min_samples_split', 2, 300, log=True),
+                           'max_features': trial.suggest_int('max_features', 10, self.df.shape[1] - 3),
+                           'learning_rate': trial.suggest_float('learning_rate', 1e-6, 1, log=True),
+                           'subsample': trial.suggest_float('subsample', 0.01, 1)}
+        
+            # define model
+            model = GradientBoostingClassifier(loss = 'log_loss', criterion = 'friedman_mse', random_state = 666,
+                                               **tune_params)
+            
+        if self.model_type == 'ElasticNet':
+            
+            # define parameters
+            tune_params = {'alpha': trial.suggest_categorical('alpha',
+                                    [1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 0.0, 1.0, 10.0, 100.0]),
+                           'l1_ratio': trial.suggest_float('l1_ratio', 0, 1),
+                           'eta0': trial.suggest_float('eta0', 1e-6, 1, log=True)}
+        
+            # define model
+            model = SGDClassifier(loss = 'log', penalty = 'elasticnet', shuffle = True,
+                                  random_state = 666, learning_rate = 'adaptive',
+                                  early_stopping = True, class_weight = 'balanced', n_jobs = -1,
+                                  **tune_params)
+            
+        # evaluate or reload performance
+        mod_name = make_model_name(tune_params)
+        pkl_path = os.path.join(self.model_save_path, mod_name + '.pkl')
+        if os.path.exists(pkl_path):
+            with open(pkl_path, 'rb') as handle:
+                pkl_reload = pickle.load(handle)
+                perf = pkl_reload['perf']
+                fitted_model = pkl_reload['fitted_model']
+                pred_list = pkl_reload['pred_list']
+                perf_add = pkl_reload['perf_add']
+        else:
+            perf, fitted_model, pred_list, perf_add = predict_cv_classifier(df=self.df, model=model, measure=self.measure,
+                                                  cv_iterator=self.cv_iterator, out_of_sample_years=self.out_of_sample_years,
+                                                  time_var=self.time_var, add_measure=self.add_measure,
+                                                  return_model=(True if self.model_save_path is not None else False))
+        
+            # save fitted models
+            if self.model_save_path is not None:
+                with open(pkl_path, 'wb') as handle:
+                    pickle.dump({'perf': perf,
+                                 'fitted_model': fitted_model,
+                                 'pred_list': pred_list,
+                                 'perf_add': perf_add}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        # evaluate optimization value
+        avg_perf = perf['valid_best'].mean()
+                
+        return avg_perf
+    
+ 
+def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_iterator=None, time_var='',
+                         out_of_sample_years=1, add_measure=[],
+                         file_name='', tuning_folder='', tuning_checkpoint_folder=''):
+    
+    '''
+    Tune hyperparameters with Optuna
+    
+    Args:
+        - df: dataframe with target 'y', "time_var" for years and other input variables
+        - tot_trials: number of trials for optimization
+        - model_type: which model to tune. 'RandomForest', 'GradientBoost', 'ElasticNet'
+        - measure: performance measure (function). Used to evaluate optimal threshold.
+        - cv_iterator: iterator for cross-validation
+        - out_of_sample_years: number of years to evaluate out-of-sample performance
+        - time_var: string for year variable
+        - add_measure: list of additional performance measures (function) to be evaluated with optimal threshold.
+    '''
+
+    if model_type not in ['RandomForest', 'GradientBoost', 'ElasticNet']:
+        raise ValueError('\''+model_type+'\' not supported. See docs for implemented learners.')
+    
+    # show splits
+    _, _, _, _ = predict_cv_classifier(df=df, cv_iterator=cv_iterator, out_of_sample_years=out_of_sample_years,
+                                        time_var=time_var, show_split=True)
+    print('\n')
+    
+    # optimization settings and folder
+    optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    warnings.filterwarnings("ignore", category=ExperimentalWarning)
+    study_name = '_'.join([file_name, model_type, measure.__name__])
+    storage = optuna.storages.RDBStorage(url='sqlite:///' + os.path.join(tuning_folder, study_name + '.db'),
+                                         heartbeat_interval=60,
+                                         grace_period=600)
+    if os.path.exists(os.path.join(tuning_folder, study_name + '.db')):
+        print('###### Reloading study:', os.path.join(tuning_folder, study_name + '.db'), '\n')
+    tuning_checkpoint = os.path.join(tuning_checkpoint_folder, study_name)
+    if not os.path.exists(tuning_checkpoint):
+        os.makedirs(tuning_checkpoint)
+    with open('iter.pkl', 'wb') as handle:  # create iter count
+        pickle.dump({'iter': 0, 'tot_iter': tot_trials, 'time': timer(), 'avg_time': 0}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    # create study and optimize
+    np.random.seed(66)
+    obj = Objective(df=df, measure=measure, cv_iterator=cv_iterator, model_type=model_type,
+                    out_of_sample_years=out_of_sample_years, time_var=time_var,
+                    model_save_path=tuning_checkpoint, add_measure=add_measure)
+
+    study = optuna.study.create_study(storage=storage,
+                                      sampler=optuna.samplers.TPESampler(seed=666),
+                                      study_name=study_name,
+                                      direction='maximize',
+                                      load_if_exists=True)
+
+    start=timer()
+    print('- Started at:', datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"), '\n')
+    study.optimize(obj, n_trials=tot_trials, n_jobs=1, gc_after_trial=True)
+    print('\nTotal elapsed time:', str(datetime.timedelta(seconds=round(timer()-start))))
+
+    # save study
+    with open(os.path.join(tuning_folder, study_name + '.pkl'), 'wb') as handle:
+                 pickle.dump(study, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    print('\n- Pickle saved to', os.path.join(tuning_folder, study_name + '.pkl'))
+    os.remove('iter.pkl')
+
+    # print results
+    print('\n\nOptimal score:', study.best_value)
+    print('Best params:\n', study.best_params)
+
+    # save logs and optimization figures
+    study_log = study.trials_dataframe(multi_index=False)
+    study_log.columns = study_log.columns.str.replace('params_', '')
+    study_log['pkl'] = study_log.apply(lambda x: os.path.join(tuning_checkpoint,
+                                        make_model_name(x[x.index.isin(study.best_params.keys())].to_dict()) + '.pkl'), axis=1)
+    plot_optimization_history(study).write_image(os.path.join(tuning_folder, study_name + '_optim_hist.png'), scale = 2)
+    plot_contour(study).write_image(os.path.join(tuning_folder, study_name + '_contour.png'), scale = 2)
+    plot_param_importances(study).write_image(os.path.join(tuning_folder, study_name + '_params_importance.png'), scale = 2)
+
+    # append all performance to study_log
+    df_add = pd.DataFrame()
+    for pkl_path in study_log.pkl.unique():
+        row_add = pd.DataFrame()
+        try:
+            with open(pkl_path, 'rb') as handle:
+                pkl_reload = pickle.load(handle)
+                perf = pkl_reload['perf']
+                perf_add = pkl_reload['perf_add']
+
+                row_add = pd.concat([row_add, perf.groupby('best_thresh').agg('mean').reset_index()[['best_thresh', 'train_best', 'valid_best', 'test_best']].add_prefix(measure.__name__.replace('_score', '').upper()+'.')], axis=1) 
+                for k, v in perf_add.items():
+                    v['gby']=0
+                    row_add = pd.concat([row_add, v.groupby('gby').agg('mean').reset_index()[['train_best', 'valid_best', 'test_best']].add_prefix(k.replace('_score', '').upper()+'.')], axis=1) 
+                row_add.insert(0, 'pkl', pkl_path)
+                df_add = df_add.append(row_add)
+        except:
+            pass
+    
+    study_log = study_log.merge(df_add, on='pkl', how='left')
+    study_log.to_csv(os.path.join(tuning_folder, study_name + '.csv'), index=False, sep=';')
+    print('\n- Tuning log saved to', os.path.join(tuning_folder, study_name + '.csv'))
+    
+    
+    return study, study_log
