@@ -4,7 +4,7 @@ Python notebook to download data from [Wharton Research Data Services](https://w
 ### Installation
 
 Clone the repository with
-`https://github.com/AleBitetto/WRDS_accounting.git`
+`git clone https://github.com/AleBitetto/WRDS_accounting.git`
 
 From console navigate the cloned folder and create a new environment with:
 ```
