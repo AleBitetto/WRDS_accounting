@@ -66,6 +66,7 @@ dependencies:
     - charset-normalizer==2.1.1
     - classes==0.4.1
     - cliff==3.10.1
+    - cloudpickle==2.2.0
     - cmaes==0.9.0
     - cmd2==2.4.2
     - colorlog==6.7.0
@@ -85,11 +86,14 @@ dependencies:
     - kaleido==0.2.1
     - kiwisolver==1.4.4
     - levenshtein==0.20.8
+    - lightgbm==3.3.3
+    - llvmlite==0.39.1
     - mako==1.2.4
     - markupsafe==2.1.1
     - matplotlib==3.5.3
     - mock==4.0.3
     - nbformat==5.7.0
+    - numba==0.56.4
     - optuna==3.0.3
     - pandasgui==0.2.13
     - pbr==5.11.0
@@ -118,6 +122,8 @@ dependencies:
     - scikit-learn==1.0.2
     - scipy==1.7.3
     - seaborn==0.12.1
+    - shap==0.41.0
+    - slicer==0.0.7
     - soup2dict==2.1.0
     - soupsieve==2.3.2.post1
     - sqlalchemy==1.4.42

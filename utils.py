@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from scipy.stats.mstats import winsorize
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import SGDClassifier
+from lightgbm import LGBMClassifier
 import optuna
 from optuna.visualization import plot_contour
 from optuna.visualization import plot_optimization_history
@@ -748,8 +749,8 @@ def evaluate_score_df(measure, true_lab_train, true_lab_valid, true_lab_test,
     return add_row 
 
 
-def predict_cv_classifier(df, model=None, measure=None, cv_iterator=None, out_of_sample_years=1,
-                          time_var='fyear', add_measure=[], return_model=False, show_split=False):
+def fit_predict_cv_classifier(df, model=None, measure=None, cv_iterator=None, out_of_sample_years=1,
+                              time_var='fyear', add_measure=[], return_model=False, show_split=False):
 
     '''
     Evaluates performance for each fold for a binary classifier. Cross validation requires "time_var" variable
@@ -849,14 +850,19 @@ def predict_cv_classifier(df, model=None, measure=None, cv_iterator=None, out_of
     return df_perf, fitted_models, pred_list, df_perf_add
 
 
-def make_model_name(tune_params):
+def make_model_name(tune_params, round_float=False, round_float_digits=5):
+    
+    if round_float:
+        for k, v in tune_params.items():
+            if type(v) == float:
+                tune_params[k] = np.round(tune_params[k], round_float_digits)
     
     return '-'.join([k+str(tune_params[k]) for k in sorted(tune_params.keys())])
 
 
 class Objective:
     def __init__(self, df, measure, cv_iterator, model_type, out_of_sample_years, time_var='fyear',
-                 model_save_path=None, add_measure=[]):
+                 model_save_path=None, add_measure=[], optim_measure='valid_best'):
         # Hold this implementation specific arguments as the fields of the class.
         self.df = df
         self.measure = measure
@@ -866,6 +872,7 @@ class Objective:
         self.time_var = time_var
         self.model_save_path = model_save_path
         self.add_measure = add_measure
+        self.optim_measure = optim_measure
 
     def __call__(self, trial):
         # Calculate an objective value by using the extra arguments.
@@ -878,7 +885,8 @@ class Objective:
             iters['avg_time'] = (iters['avg_time'] + (timer()-iters['time'])) / 2
             iters['time'] = timer()
             print('Trial', iters['iter'], '/', iters['tot_iter'], '    avg elapsed time: ',
-                  str(datetime.timedelta(seconds=round(iters['avg_time']))), end='\r')
+                  str(datetime.timedelta(seconds=round(iters['avg_time']))),
+                  '  current optimal value:', iters['best_val'], ' '*30, end='\r')
             with open('iter.pkl', 'wb') as handle:
                 pickle.dump(iters, handle, protocol=pickle.HIGHEST_PROTOCOL)
         except:
@@ -886,6 +894,7 @@ class Objective:
         
         # settings
         if self.model_type == 'RandomForest':
+            # https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.RandomForestClassifier.html#sklearn.ensemble.RandomForestClassifier
             
             # define parameters
             tune_params = {'n_estimators': trial.suggest_int('n_estimators', 10, 2000, log=True),
@@ -898,6 +907,7 @@ class Objective:
                                            **tune_params)
             
         if self.model_type == 'GradientBoost':
+            # https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html#sklearn.ensemble.GradientBoostingClassifier
             
             # define parameters
             tune_params = {'n_estimators': trial.suggest_int('n_estimators', 10, 2000, log=True),
@@ -907,10 +917,33 @@ class Objective:
                            'subsample': trial.suggest_float('subsample', 0.01, 1)}
         
             # define model
-            model = GradientBoostingClassifier(loss = 'log_loss', criterion = 'friedman_mse', random_state = 666,
+            model = GradientBoostingClassifier(loss = 'deviance', criterion = 'friedman_mse', random_state = 666,
                                                **tune_params)
             
+        if self.model_type == 'LightGBM':
+            # https://lightgbm.readthedocs.io/en/latest/pythonapi/lightgbm.LGBMClassifier.html
+            # https://lightgbm.readthedocs.io/en/latest/Parameters.html
+            
+            # define parameters
+            tune_params = {'n_estimators': trial.suggest_int('n_estimators', 10, 2000, log=True),
+                           'max_depth': trial.suggest_int('max_depth', 2, 100, log=True),
+                           'min_child_samples': trial.suggest_int('min_child_samples', 2, 300, log=True),
+                           'reg_alpha': trial.suggest_categorical('reg_alpha',
+                                    [1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 0.0, 1.0, 10.0, 100.0]),
+                           'reg_lambda': trial.suggest_categorical('reg_lambda',
+                                    [1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 0.0, 1.0, 10.0, 100.0]),
+                           'colsample_bytree': trial.suggest_float('colsample_bytree', 0.2, 1),
+                           'learning_rate': trial.suggest_float('learning_rate', 1e-6, 1, log=True),
+                           'subsample': trial.suggest_float('subsample', 0.01, 1)}
+            
+            # define model
+            model = LGBMClassifier(boosting_type='gbdt', num_leaves=np.min([2**tune_params['max_depth'], 100]), objective='binary',
+                                   class_weight = 'balanced', random_state = 666, n_jobs=-1,
+                                   device_type='cpu', deterministic=True, tree_learner='serial',                                   
+                                   **tune_params)
+            
         if self.model_type == 'ElasticNet':
+            # https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.SGDClassifier.html#sklearn.linear_model.SGDClassifier
             
             # define parameters
             tune_params = {'alpha': trial.suggest_categorical('alpha',
@@ -923,9 +956,9 @@ class Objective:
                                   random_state = 666, learning_rate = 'adaptive',
                                   early_stopping = True, class_weight = 'balanced', n_jobs = -1,
                                   **tune_params)
-            
+         
         # evaluate or reload performance
-        mod_name = make_model_name(tune_params)
+        mod_name = make_model_name(tune_params, round_float=(True if self.model_type == 'LightGBM' else False))
         pkl_path = os.path.join(self.model_save_path, mod_name + '.pkl')
         if os.path.exists(pkl_path):
             with open(pkl_path, 'rb') as handle:
@@ -935,7 +968,7 @@ class Objective:
                 pred_list = pkl_reload['pred_list']
                 perf_add = pkl_reload['perf_add']
         else:
-            perf, fitted_model, pred_list, perf_add = predict_cv_classifier(df=self.df, model=model, measure=self.measure,
+            perf, fitted_model, pred_list, perf_add = fit_predict_cv_classifier(df=self.df, model=model, measure=self.measure,
                                                   cv_iterator=self.cv_iterator, out_of_sample_years=self.out_of_sample_years,
                                                   time_var=self.time_var, add_measure=self.add_measure,
                                                   return_model=(True if self.model_save_path is not None else False))
@@ -949,13 +982,23 @@ class Objective:
                                  'perf_add': perf_add}, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
         # evaluate optimization value
-        avg_perf = perf['valid_best'].mean()
+        avg_perf = perf[self.optim_measure].mean()
                 
         return avg_perf
     
- 
+
+def update_current_optimal_val(study, frozen_trial):
+    with open('iter.pkl', 'rb') as handle:
+        iters=pickle.load(handle)
+
+    iters['best_val'] = study.best_value
+
+    with open('iter.pkl', 'wb') as handle:
+        pickle.dump(iters, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                
+                
 def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_iterator=None, time_var='',
-                         out_of_sample_years=1, add_measure=[],
+                         out_of_sample_years=1, add_measure=[], optim_measure='valid_best',
                          file_name='', tuning_folder='', tuning_checkpoint_folder=''):
     
     '''
@@ -964,19 +1007,20 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
     Args:
         - df: dataframe with target 'y', "time_var" for years and other input variables
         - tot_trials: number of trials for optimization
-        - model_type: which model to tune. 'RandomForest', 'GradientBoost', 'ElasticNet'
+        - model_type: which model to tune. 'RandomForest', 'GradientBoost', 'LightGBM', 'ElasticNet'
         - measure: performance measure (function). Used to evaluate optimal threshold.
         - cv_iterator: iterator for cross-validation
         - out_of_sample_years: number of years to evaluate out-of-sample performance
         - time_var: string for year variable
-        - add_measure: list of additional performance measures (function) to be evaluated with optimal threshold.
+        - add_measure: list of additional performance measures (function) to be evaluated with optimal threshold
+        - optim_measure: optimization measure, one of columns of "df_pred" in fit_predict_cv_classifier()
     '''
 
-    if model_type not in ['RandomForest', 'GradientBoost', 'ElasticNet']:
+    if model_type not in ['RandomForest', 'GradientBoost', 'ElasticNet', 'LightGBM']:
         raise ValueError('\''+model_type+'\' not supported. See docs for implemented learners.')
     
     # show splits
-    _, _, _, _ = predict_cv_classifier(df=df, cv_iterator=cv_iterator, out_of_sample_years=out_of_sample_years,
+    _, _, _, _ = fit_predict_cv_classifier(df=df, cv_iterator=cv_iterator, out_of_sample_years=out_of_sample_years,
                                         time_var=time_var, show_split=True)
     print('\n')
     
@@ -994,7 +1038,7 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
     if not os.path.exists(tuning_checkpoint):
         os.makedirs(tuning_checkpoint)
     with open('iter.pkl', 'wb') as handle:  # create iter count
-        pickle.dump({'iter': 0, 'tot_iter': tot_trials, 'time': timer(), 'avg_time': 0}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump({'iter': 0, 'tot_iter': tot_trials, 'time': timer(), 'avg_time': 0, 'best_val': ''}, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     # create study and optimize
     np.random.seed(66)
@@ -1002,6 +1046,7 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
                     out_of_sample_years=out_of_sample_years, time_var=time_var,
                     model_save_path=tuning_checkpoint, add_measure=add_measure)
 
+    np.random.seed(66)
     study = optuna.study.create_study(storage=storage,
                                       sampler=optuna.samplers.TPESampler(seed=666),
                                       study_name=study_name,
@@ -1010,7 +1055,7 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
 
     start=timer()
     print('- Started at:', datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"), '\n')
-    study.optimize(obj, n_trials=tot_trials, n_jobs=1, gc_after_trial=True)
+    study.optimize(obj, n_trials=tot_trials, n_jobs=1, gc_after_trial=True, callbacks=[update_current_optimal_val])
     print('\nTotal elapsed time:', str(datetime.timedelta(seconds=round(timer()-start))))
 
     # save study
@@ -1020,7 +1065,7 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
     os.remove('iter.pkl')
 
     # print results
-    print('\n\nOptimal score:', study.best_value)
+    print('\n\nOptimal score:', study.best_value, '  (Trial', str(study.best_trial.number)+')')
     print('Best params:\n', study.best_params)
 
     # save logs and optimization figures
