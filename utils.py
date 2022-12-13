@@ -1031,14 +1031,14 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
     if not reload:
     
         # optimization settings and folder
+        if os.path.exists(os.path.join(tuning_folder, study_name + '.db')):
+            print('###### Reloading study:', os.path.join(tuning_folder, study_name + '.db'), '\n')
         optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         warnings.filterwarnings("ignore", category=ExperimentalWarning)
         storage = optuna.storages.RDBStorage(url='sqlite:///' + os.path.join(tuning_folder, study_name + '.db'),
                                              heartbeat_interval=60,
                                              grace_period=600)
-        if os.path.exists(os.path.join(tuning_folder, study_name + '.db')):
-            print('###### Reloading study:', os.path.join(tuning_folder, study_name + '.db'), '\n')
         
         if not os.path.exists(tuning_checkpoint):
             os.makedirs(tuning_checkpoint)
