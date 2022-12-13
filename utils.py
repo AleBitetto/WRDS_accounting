@@ -1072,7 +1072,8 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
     study_log = study.trials_dataframe(multi_index=False)
     study_log.columns = study_log.columns.str.replace('params_', '')
     study_log['pkl'] = study_log.apply(lambda x: os.path.join(tuning_checkpoint,
-                                        make_model_name(x[x.index.isin(study.best_params.keys())].to_dict()) + '.pkl'), axis=1)
+                                        make_model_name(x[x.index.isin(study.best_params.keys())].to_dict(),
+                                                       round_float=(True if model_type=='LightGBM' else False)) + '.pkl'), axis=1)
     plot_optimization_history(study).write_image(os.path.join(tuning_folder, study_name + '_optim_hist.png'), scale = 2)
     plot_contour(study).write_image(os.path.join(tuning_folder, study_name + '_contour.png'), scale = 2)
     plot_param_importances(study).write_image(os.path.join(tuning_folder, study_name + '_params_importance.png'), scale = 2)
