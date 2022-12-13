@@ -999,7 +999,7 @@ def update_current_optimal_val(study, frozen_trial):
                 
 def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_iterator=None, time_var='',
                          out_of_sample_years=1, add_measure=[], optim_measure='valid_best',
-                         file_name='', tuning_folder='', tuning_checkpoint_folder=''):
+                         file_name='', tuning_folder='', tuning_checkpoint_folder='', reload=False):
     
     '''
     Tune hyperparameters with Optuna
@@ -1014,6 +1014,7 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
         - time_var: string for year variable
         - add_measure: list of additional performance measures (function) to be evaluated with optimal threshold
         - optim_measure: optimization measure, one of columns of "df_pred" in fit_predict_cv_classifier()
+        - reload: if True, reload previous results
     '''
 
     if model_type not in ['RandomForest', 'GradientBoost', 'ElasticNet', 'LightGBM']:
@@ -1024,48 +1025,62 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
                                         time_var=time_var, show_split=True)
     print('\n')
     
-    # optimization settings and folder
-    optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-    warnings.filterwarnings("ignore", category=ExperimentalWarning)
     study_name = '_'.join([file_name, model_type, measure.__name__])
-    storage = optuna.storages.RDBStorage(url='sqlite:///' + os.path.join(tuning_folder, study_name + '.db'),
-                                         heartbeat_interval=60,
-                                         grace_period=600)
-    if os.path.exists(os.path.join(tuning_folder, study_name + '.db')):
-        print('###### Reloading study:', os.path.join(tuning_folder, study_name + '.db'), '\n')
     tuning_checkpoint = os.path.join(tuning_checkpoint_folder, study_name)
-    if not os.path.exists(tuning_checkpoint):
-        os.makedirs(tuning_checkpoint)
-    with open('iter.pkl', 'wb') as handle:  # create iter count
-        pickle.dump({'iter': 0, 'tot_iter': tot_trials, 'time': timer(), 'avg_time': 0, 'best_val': ''}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    
+    if not reload:
+    
+        # optimization settings and folder
+        optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        warnings.filterwarnings("ignore", category=ExperimentalWarning)
+        storage = optuna.storages.RDBStorage(url='sqlite:///' + os.path.join(tuning_folder, study_name + '.db'),
+                                             heartbeat_interval=60,
+                                             grace_period=600)
+        if os.path.exists(os.path.join(tuning_folder, study_name + '.db')):
+            print('###### Reloading study:', os.path.join(tuning_folder, study_name + '.db'), '\n')
+        
+        if not os.path.exists(tuning_checkpoint):
+            os.makedirs(tuning_checkpoint)
+        with open('iter.pkl', 'wb') as handle:  # create iter count
+            pickle.dump({'iter': 0, 'tot_iter': tot_trials, 'time': timer(), 'avg_time': 0, 'best_val': ''}, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-    # create study and optimize
-    np.random.seed(66)
-    obj = Objective(df=df, measure=measure, cv_iterator=cv_iterator, model_type=model_type,
-                    out_of_sample_years=out_of_sample_years, time_var=time_var,
-                    model_save_path=tuning_checkpoint, add_measure=add_measure)
+        # create study and optimize
+        np.random.seed(66)
+        obj = Objective(df=df, measure=measure, cv_iterator=cv_iterator, model_type=model_type,
+                        out_of_sample_years=out_of_sample_years, time_var=time_var,
+                        model_save_path=tuning_checkpoint, add_measure=add_measure)
 
-    np.random.seed(66)
-    study = optuna.study.create_study(storage=storage,
-                                      sampler=optuna.samplers.TPESampler(seed=666),
-                                      study_name=study_name,
-                                      direction='maximize',
-                                      load_if_exists=True)
+        np.random.seed(66)
+        study = optuna.study.create_study(storage=storage,
+                                          sampler=optuna.samplers.TPESampler(seed=666),
+                                          study_name=study_name,
+                                          direction='maximize',
+                                          load_if_exists=True)
 
-    start=timer()
-    print('- Started at:', datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"), '\n')
-    study.optimize(obj, n_trials=tot_trials, n_jobs=1, gc_after_trial=True, callbacks=[update_current_optimal_val])
-    print('\nTotal elapsed time:', str(datetime.timedelta(seconds=round(timer()-start))))
+        start=timer()
+        print('- Started at:', datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"), '\n')
+        study.optimize(obj, n_trials=tot_trials, n_jobs=1, gc_after_trial=True, callbacks=[update_current_optimal_val])
+        eval_time=datetime.timedelta(seconds=round(timer()-start))
+        
+        # save study
+        with open(os.path.join(tuning_folder, study_name + '.pkl'), 'wb') as handle:
+                     pickle.dump({'study': study, 'eval_time': eval_time}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        print('\n- Pickle saved to', os.path.join(tuning_folder, study_name + '.pkl'))
+        os.remove('iter.pkl')
 
-    # save study
-    with open(os.path.join(tuning_folder, study_name + '.pkl'), 'wb') as handle:
-                 pickle.dump(study, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    print('\n- Pickle saved to', os.path.join(tuning_folder, study_name + '.pkl'))
-    os.remove('iter.pkl')
-
+    else:
+        print('\n- Session reloaded')
+        with open(os.path.join(tuning_folder, study_name + '.pkl'), 'rb') as handle:
+            pkl_reload = pickle.load(handle)
+            study=pkl_reload['study']
+            eval_time=pkl_reload['eval_time']
+    
+    print('\nTotal elapsed time:', str(eval_time))
+        
     # print results
-    print('\n\nOptimal score:', study.best_value, '  (Trial', str(study.best_trial.number)+')')
+    print('\n\nOptimization metric:', measure.__name__, 'on', optim_measure)
+    print('Optimal score:', study.best_value, '  (Trial', str(study.best_trial.number)+')')
     print('Best params:\n', study.best_params)
 
     # save logs and optimization figures
@@ -1088,16 +1103,41 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
                 perf = pkl_reload['perf']
                 perf_add = pkl_reload['perf_add']
 
-                row_add = pd.concat([row_add, perf.groupby('best_thresh').agg('mean').reset_index()[['best_thresh', 'train_best', 'valid_best', 'test_best']].add_prefix(measure.__name__.replace('_score', '').upper()+'.')], axis=1) 
+                row_add = pd.concat([row_add,
+                                     (perf.groupby('best_thresh').agg('mean').reset_index().drop(columns='split')
+                                      .add_prefix(measure.__name__.replace('_score', '').upper()+'.')
+                                     )], axis=1) 
                 for k, v in perf_add.items():
                     v['gby']=0
-                    row_add = pd.concat([row_add, v.groupby('gby').agg('mean').reset_index()[['train_best', 'valid_best', 'test_best']].add_prefix(k.replace('_score', '').upper()+'.')], axis=1) 
+                    row_add = pd.concat([row_add,
+                                         (v.groupby('gby').agg('mean').reset_index().drop(columns=['gby', 'split'])
+                                          .add_prefix(k.replace('_score', '').upper()+'.')
+                                         )], axis=1) 
                 row_add.insert(0, 'pkl', pkl_path)
                 df_add = df_add.append(row_add)
         except:
             pass
     
     study_log = study_log.merge(df_add, on='pkl', how='left')
+    
+    # print best parameters performance
+    avail_measure = study_log.columns[study_log.columns.str.endswith(optim_measure)].str.replace('.'+optim_measure, '', regex=True).tolist()
+    avail_set = study_log.columns[study_log.columns.str.startswith(avail_measure[0])].str.replace(avail_measure[0]+'.', '', regex=True).tolist()
+    best_row = study_log[study_log['number'] == study.best_trial.number]
+
+    df_best = pd.DataFrame()
+    for meas in avail_measure:
+        common_cols = set([meas+'.'+x for x in avail_set]) & set(best_row.columns)
+        add_df = best_row.loc[:, common_cols]
+        add_df.columns = add_df.columns.str.replace(meas+'.', '', regex=True)
+        add_df.insert(0, 'Performance', meas)
+        df_best = df_best.append(add_df)
+    df_best=df_best.fillna('')#.fillna(method='bfill').fillna(method='ffill')
+    # df_best=df_best[[df_best.columns[df_best.columns.str.contains(x)][0] for x in ['Performance', 'thresh', 'train', 'valid', 'test']]]
+    df_best=df_best[['Performance', 'best_thresh', 'train_best', 'valid_best', 'test_best', 'train_05', 'valid_05', 'test_05']]
+    print('Best params performance:')
+    display(df_best)
+    
     study_log.to_csv(os.path.join(tuning_folder, study_name + '.csv'), index=False, sep=';')
     print('\n- Tuning log saved to', os.path.join(tuning_folder, study_name + '.csv'))
     
