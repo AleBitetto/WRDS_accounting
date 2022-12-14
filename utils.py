@@ -1062,11 +1062,12 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
         print('- Started at:', datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"), '\n')
         study.optimize(obj, n_trials=tot_trials, n_jobs=1, gc_after_trial=True, callbacks=[update_current_optimal_val])
         eval_time=datetime.timedelta(seconds=round(timer()-start))
+        print('\nTotal elapsed time:', str(eval_time))
         
         # save study
         with open(os.path.join(tuning_folder, study_name + '.pkl'), 'wb') as handle:
                      pickle.dump({'study': study, 'eval_time': eval_time}, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        print('\n- Pickle saved to', os.path.join(tuning_folder, study_name + '.pkl'))
+        print('\n\n- Pickle saved to', os.path.join(tuning_folder, study_name + '.pkl'))
         os.remove('iter.pkl')
 
     else:
@@ -1075,8 +1076,8 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
             pkl_reload = pickle.load(handle)
             study=pkl_reload['study']
             eval_time=pkl_reload['eval_time']
+            print('\nTotal elapsed time:', str(eval_time))
     
-    print('\nTotal elapsed time:', str(eval_time))
         
     # print results
     print('\n\nOptimization metric:', measure.__name__, 'on', optim_measure)
@@ -1143,3 +1144,4 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
     
     
     return study, study_log
+
