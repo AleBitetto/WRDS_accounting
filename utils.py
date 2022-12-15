@@ -1066,7 +1066,9 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
         
         # save study
         with open(os.path.join(tuning_folder, study_name + '.pkl'), 'wb') as handle:
-                     pickle.dump({'study': study, 'eval_time': eval_time}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                     pickle.dump({'study': study, 'eval_time': eval_time,'study_name': study_name,
+                                  'measure': measure, 'cv_iterator': cv_iterator, 'out_of_sample_years': out_of_sample_years,
+                                  'add_measure': add_measure, 'optim_measure': optim_measure}, handle, protocol=pickle.HIGHEST_PROTOCOL)
         print('\n\n- Pickle saved to', os.path.join(tuning_folder, study_name + '.pkl'))
         os.remove('iter.pkl')
 
@@ -1078,7 +1080,6 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
             eval_time=pkl_reload['eval_time']
             print('\nTotal elapsed time:', str(eval_time))
     
-        
     # print results
     print('\n\nOptimization metric:', measure.__name__, 'on', optim_measure)
     print('Optimal score:', study.best_value, '  (Trial', str(study.best_trial.number)+')')
