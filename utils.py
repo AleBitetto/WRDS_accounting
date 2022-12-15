@@ -20,7 +20,7 @@ import warnings
 from optuna.exceptions import ExperimentalWarning
 import logging
 import sys
-import pickle
+import joblib
 
 
 def summary_stats(df=None, date_format='D', n_digits=2):
@@ -891,16 +891,14 @@ class Objective:
         
         # print and update iter count
         try:
-            with open('iter.pkl', 'rb') as handle:
-                iters=pickle.load(handle)
+            iters=joblib.load('iter.pkl')
             iters['iter'] += 1
             iters['avg_time'] = (iters['avg_time'] + (timer()-iters['time'])) / 2
             iters['time'] = timer()
             print('Trial', iters['iter'], '/', iters['tot_iter'], '    avg elapsed time: ',
                   str(datetime.timedelta(seconds=round(iters['avg_time']))),
                   '  current optimal value:', iters['best_val'], ' '*30, end='\r')
-            with open('iter.pkl', 'wb') as handle:
-                pickle.dump(iters, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            joblib.dump(iters, 'iter.pkl')
         except:
             pass
         
@@ -973,12 +971,11 @@ class Objective:
         mod_name = make_model_name(tune_params, round_float=(True if self.model_type == 'LightGBM' else False))
         pkl_path = os.path.join(self.model_save_path, mod_name + '.pkl')
         if os.path.exists(pkl_path):
-            with open(pkl_path, 'rb') as handle:
-                pkl_reload = pickle.load(handle)
-                perf = pkl_reload['perf']
-                fitted_model = pkl_reload['fitted_model']
-                pred_list = pkl_reload['pred_list']
-                perf_add = pkl_reload['perf_add']
+            pkl_reload=joblib.load(pkl_path)
+            perf = pkl_reload['perf']
+            fitted_model = pkl_reload['fitted_model']
+            pred_list = pkl_reload['pred_list']
+            perf_add = pkl_reload['perf_add']
         else:
             perf, fitted_model, pred_list, perf_add = fit_predict_cv_classifier(df=self.df, model=model, measure=self.measure,
                                                   cv_iterator=self.cv_iterator, out_of_sample_years=self.out_of_sample_years,
@@ -987,11 +984,10 @@ class Objective:
         
             # save fitted models
             if self.model_save_path is not None:
-                with open(pkl_path, 'wb') as handle:
-                    pickle.dump({'perf': perf,
-                                 'fitted_model': fitted_model,
-                                 'pred_list': pred_list,
-                                 'perf_add': perf_add}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                joblib.dump({'perf': perf,
+                             'fitted_model': fitted_model,
+                             'pred_list': pred_list,
+                             'perf_add': perf_add}, pkl_path, compress=('lzma', 3))
 
         # evaluate optimization value
         avg_perf = perf[self.optim_measure].mean()
@@ -1000,13 +996,9 @@ class Objective:
     
 
 def update_current_optimal_val(study, frozen_trial):
-    with open('iter.pkl', 'rb') as handle:
-        iters=pickle.load(handle)
-
+    iters=joblib.load('iter.pkl')
     iters['best_val'] = study.best_value
-
-    with open('iter.pkl', 'wb') as handle:
-        pickle.dump(iters, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    joblib.dump(iters, 'iter.pkl')
                 
                 
 def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_iterator=None, time_var='',
@@ -1054,8 +1046,7 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
         
         if not os.path.exists(tuning_checkpoint):
             os.makedirs(tuning_checkpoint)
-        with open('iter.pkl', 'wb') as handle:  # create iter count
-            pickle.dump({'iter': 0, 'tot_iter': tot_trials, 'time': timer(), 'avg_time': 0, 'best_val': ''}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        joblib.dump({'iter': 0, 'tot_iter': tot_trials, 'time': timer(), 'avg_time': 0, 'best_val': ''}, 'iter.pkl') # create iter count
 
         # create study and optimize
         np.random.seed(66)
@@ -1077,20 +1068,18 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
         print('\nTotal elapsed time:', str(eval_time))
         
         # save study
-        with open(os.path.join(tuning_folder, study_name + '.pkl'), 'wb') as handle:
-                     pickle.dump({'study': study, 'eval_time': eval_time,'study_name': study_name,
-                                  'measure': measure, 'cv_iterator': cv_iterator, 'out_of_sample_years': out_of_sample_years,
-                                  'add_measure': add_measure, 'optim_measure': optim_measure}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        joblib.dump({'study': study, 'eval_time': eval_time, 'study_name': study_name, 'measure': measure,
+                     'cv_iterator': cv_iterator, 'out_of_sample_years': out_of_sample_years, 'add_measure': add_measure,
+                     'optim_measure': optim_measure},os.path.join(tuning_folder, study_name + '.pkl'), compress=('lzma', 3))
         print('\n\n- Pickle saved to', os.path.join(tuning_folder, study_name + '.pkl'))
         os.remove('iter.pkl')
 
     else:
         print('\n- Session reloaded')
-        with open(os.path.join(tuning_folder, study_name + '.pkl'), 'rb') as handle:
-            pkl_reload = pickle.load(handle)
-            study=pkl_reload['study']
-            eval_time=pkl_reload['eval_time']
-            print('\nTotal elapsed time:', str(eval_time))
+        pkl_reload=joblib.load(os.path.join(tuning_folder, study_name + '.pkl'))
+        study=pkl_reload['study']
+        eval_time=pkl_reload['eval_time']
+        print('\nTotal elapsed time:', str(eval_time))
     
     # print results
     print('\n\nOptimization metric:', measure.__name__, 'on', optim_measure)
@@ -1113,23 +1102,22 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
     for pkl_path in study_log.pkl.unique():
         row_add = pd.DataFrame()
         try:
-            with open(pkl_path, 'rb') as handle:
-                pkl_reload = pickle.load(handle)
-                perf = pkl_reload['perf']
-                perf_add = pkl_reload['perf_add']
+            pkl_reload=joblib.load(pkl_path)
+            perf = pkl_reload['perf']
+            perf_add = pkl_reload['perf_add']
 
+            row_add = pd.concat([row_add,
+                                 (perf.groupby('best_thresh').agg('mean').reset_index().drop(columns='split')
+                                  .add_prefix(measure.__name__.replace('_score', '').upper()+'.')
+                                 )], axis=1) 
+            for k, v in perf_add.items():
+                v['gby']=0
                 row_add = pd.concat([row_add,
-                                     (perf.groupby('best_thresh').agg('mean').reset_index().drop(columns='split')
-                                      .add_prefix(measure.__name__.replace('_score', '').upper()+'.')
+                                     (v.groupby('gby').agg('mean').reset_index().drop(columns=['gby', 'split'])
+                                      .add_prefix(k.replace('_score', '').upper()+'.')
                                      )], axis=1) 
-                for k, v in perf_add.items():
-                    v['gby']=0
-                    row_add = pd.concat([row_add,
-                                         (v.groupby('gby').agg('mean').reset_index().drop(columns=['gby', 'split'])
-                                          .add_prefix(k.replace('_score', '').upper()+'.')
-                                         )], axis=1) 
-                row_add.insert(0, 'pkl', pkl_path)
-                df_add = pd.concat([df_add, row_add])
+            row_add.insert(0, 'pkl', pkl_path)
+            df_add = pd.concat([df_add, row_add])
         except:
             pass
     
