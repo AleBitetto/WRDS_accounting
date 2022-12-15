@@ -32,6 +32,7 @@ def summary_stats(df=None, date_format='D', n_digits=2):
 
     import pandas as pd
     import numpy as np
+    import warnings
     
     NUMERICS = ['number', 'int16', 'int32', 'int64', 'float16', 'float32', 'float64']
     DATES = ['datetimetz', 'datetime64', 'datetime']
@@ -60,7 +61,10 @@ def summary_stats(df=None, date_format='D', n_digits=2):
         val = val[~np.isnan(val)]
         val = val[~np.isinf(val)]
 
+        warnings.filterwarnings("ignore")
         perc = np.quantile(val, [0.01, 0.05, 0.95, 0.99])
+        median = np.round(np.median(val), n_digits)
+        warnings.filterwarnings("default")
 
         add_row = pd.DataFrame({'VARIABLE': var,
                                 'TYPE': str(df[var].dtypes),
@@ -73,7 +77,7 @@ def summary_stats(df=None, date_format='D', n_digits=2):
                                 'MAX': np.round(val.max(), n_digits),
                                 'MEAN': np.round(val.mean(), n_digits),
                                 'STDDEV': np.round(val.std(), n_digits),
-                                'MEDIAN': np.round(np.median(val), n_digits),
+                                'MEDIAN': median,
                                 'PERC1': np.round(perc[0], n_digits),
                                 'PERC5': np.round(perc[1], n_digits),
                                 'PERC95': np.round(perc[2], n_digits),
@@ -81,7 +85,7 @@ def summary_stats(df=None, date_format='D', n_digits=2):
                                 'SUM': np.round(val.sum(), n_digits)
                                }, index = [0])
 
-        num_stats = num_stats.append(add_row)
+        num_stats = pd.concat([num_stats, add_row])
 
 
     # Categorical stats
@@ -98,7 +102,7 @@ def summary_stats(df=None, date_format='D', n_digits=2):
                                 'VALUES_BY_FREQ': '|'.join(df[var].value_counts().index[:40].astype(str))
                                }, index = [0])
 
-        cat_stats = cat_stats.append(add_row)
+        cat_stats = pd.concat([cat_stats, add_row])
 
 
     # Boolean stats
@@ -108,7 +112,10 @@ def summary_stats(df=None, date_format='D', n_digits=2):
 
         val = df[var].dropna().values
 
+        warnings.filterwarnings("ignore")
         perc = np.quantile(val.astype(int), [0.01, 0.05, 0.95, 0.99])
+        median = np.round(np.median(val), n_digits)
+        warnings.filterwarnings("default")        
                                                    
         add_row = pd.DataFrame({'VARIABLE': var,
                                 'TYPE': str(df[var].dtypes),
@@ -116,7 +123,7 @@ def summary_stats(df=None, date_format='D', n_digits=2):
                                 'NANs': df[var].isna().sum(),
                                 'MEAN': np.round(val.mean(), n_digits),
                                 'STDDEV': np.round(val.std(), n_digits),
-                                'MEDIAN': np.round(np.median(val), n_digits),
+                                'MEDIAN': median,
                                 'PERC1': perc[0],
                                 'PERC5': perc[1],
                                 'PERC95': perc[2],
@@ -126,7 +133,7 @@ def summary_stats(df=None, date_format='D', n_digits=2):
                                                              for k, v in df[var].dropna().value_counts().to_dict().items()])
                                }, index = [0])
 
-        bool_stats = bool_stats.append(add_row)
+        bool_stats = pd.concat([bool_stats, add_row])
 
     # Date stats
     date_stats = pd.DataFrame(columns=['VARIABLE', 'TYPE', 'OBS', 'UNIQUE', 'NANs', 'MIN', 'MAX', 'MEDIAN', 'PERC1',
@@ -140,11 +147,16 @@ def summary_stats(df=None, date_format='D', n_digits=2):
         val_cnt = sorted(pd.Series(val_str).unique())
         mapping = dict(zip(val_cnt, range(len(val_cnt))))
         mapped = [mapping.get(v, v) for v in val_str]
+        warnings.filterwarnings("ignore")
         med_ind = np.median(mapped).astype(int)
+        warnings.filterwarnings("default")  
 
         if len(val) > 0:
         
+            warnings.filterwarnings("ignore")
             perc = np.quantile(mapped, [0.01, 0.05, 0.95, 0.99]).astype(int)
+            median = [k for k, v in mapping.items() if v == med_ind][0]
+            warnings.filterwarnings("default")  
             add_row = pd.DataFrame({'VARIABLE': var,
                                     'TYPE': str(df[var].dtypes),
                                     'OBS': tot_rows,
@@ -152,7 +164,7 @@ def summary_stats(df=None, date_format='D', n_digits=2):
                                     'NANs': df[var].isna().sum(),
                                     'MIN': np.datetime_as_string(val.min(), unit=date_format),
                                     'MAX': np.datetime_as_string(val.max(), unit=date_format),
-                                    'MEDIAN': [k for k, v in mapping.items() if v == med_ind][0],
+                                    'MEDIAN': median,
                                     'PERC1': [k for k, v in mapping.items() if v == perc[0]][0],
                                     'PERC5': [k for k, v in mapping.items() if v == perc[1]][0],
                                     'PERC95': [k for k, v in mapping.items() if v == perc[2]][0],
@@ -166,7 +178,7 @@ def summary_stats(df=None, date_format='D', n_digits=2):
                             'NANs': df[var].isna().sum()
                        }, index = [0])
 
-        date_stats = date_stats.append(add_row)
+        date_stats = pd.concat([date_stats, add_row])
 
     # final stats
     all_col_set = ['VARIABLE', 'TYPE', 'OBS', 'UNIQUE', 'NANs', 'INFs', 'ZEROs', 'BLANKs', 'MEAN', 'STDDEV', 'MIN', 
@@ -174,16 +186,16 @@ def summary_stats(df=None, date_format='D', n_digits=2):
     used_col_set = []
     final_stats = pd.DataFrame(columns=all_col_set)
     if num_stats.shape[0] > 0:
-        final_stats = final_stats.append(num_stats)
+        final_stats = pd.concat([final_stats, num_stats])
         used_col_set.extend(num_stats.columns)
     if cat_stats.shape[0] > 0:
-        final_stats = final_stats.append(cat_stats)
+        final_stats = pd.concat([final_stats, cat_stats])
         used_col_set.extend(cat_stats.columns)
     if bool_stats.shape[0] > 0:
-        final_stats = final_stats.append(bool_stats)
+        final_stats = pd.concat([final_stats, bool_stats])
         used_col_set.extend(bool_stats.columns)
     if date_stats.shape[0] > 0:
-        final_stats = final_stats.append(date_stats)
+        final_stats = pd.concat([final_stats, date_stats])
         used_col_set.extend(date_stats.columns)
 
     final_stats = final_stats[[x for x in all_col_set if x in np.unique(used_col_set)]]
@@ -225,12 +237,12 @@ def stats_with_description(df, df_vardescr_path, col_to_lowercase=True, lag_labe
         dd=df_vardescr.copy()
         dd['Variable Name'] = dd['Variable Name'] + lag_label
         dd['Description'] = 'Lag of ' + dd['Description']
-        df_vardescr = df_vardescr.append(dd)
+        df_vardescr = pd.concat([df_vardescr, dd])
     if pc_label is not None:
         dd=df_vardescr.copy()
         dd['Variable Name'] = dd['Variable Name'] + pc_label
         dd['Description'] = 'Percentage change of ' + dd['Description']
-        df_vardescr = df_vardescr.append(dd)
+        ddf_vardescr = pd.concat([df_vardescr, dd])
     df_stats = df_stats.merge(df_vardescr, how='left', left_on='VARIABLE', right_on='Variable Name').drop(columns=['Variable Name'])
     move_col = df_stats.pop('Description')
     df_stats.insert(1, 'Description', move_col)
@@ -318,7 +330,7 @@ def merge_df(df_left, df_right, left_on_key = 'year', right_on_key = 'year', rig
         mul_list = np.unique(df_mul['gvkey'])
 
         for el in mul_list:
-            ref_tab = ref_tab.append(pd.DataFrame({'gvkey': el, 'ID': str(cc)}))
+            ref_tab = pd.concat([ref_tab, pd.DataFrame({'gvkey': el, 'ID': str(cc)})])
             cc += 1
 
         check_multiple_assignment = ref_tab.groupby('gvkey').agg(count=('ID', lambda x: len(x)),
@@ -335,7 +347,7 @@ def merge_df(df_left, df_right, left_on_key = 'year', right_on_key = 'year', rig
     t_sin = pd.DataFrame({'gvkey': sin_list, 'ID': ''})
     t_sin = t_sin[~t_sin['gvkey'].isin(ref_tab['gvkey'])]
     t_sin['ID'] = [str(x) for x in np.arange(cc, cc + len(t_sin))]
-    ref_tab=ref_tab.append(t_sin)
+    ref_tab=pd.concat([ref_tab, t_sin])
     ref_tab = dict(zip(ref_tab['gvkey'], ref_tab['ID']))
     
     # map ID on df_left
@@ -475,7 +487,7 @@ def plot_time_range(df, gr_by=['gvkey', 'consec_year_group'], time_var='fyear', 
     fig, ax = plt.subplots(figsize=fig_size)
 
     tot_perc = plot_data[(plot_data['obs'] >= min_obs) | (plot_data['count'] >= min_count)]['size'].sum()
-    year_val = sorted(plot_data['min'].append(plot_data['max']).unique())
+    year_val = sorted(pd.concat([plot_data['min'], plot_data['max']]).unique())
     cc=0
     for index, row in plot_data.iterrows():
         if row['obs'] >= min_obs or row['count'] >= min_count:
@@ -530,9 +542,9 @@ def make_features(df_work, df_original, thrsh_zeros = 0.3, file_name = '', col_k
     # remove empty columns and columns with % of zeros above thrsh_zeros
     zero_perc = pd.DataFrame(columns=['Variable', 'perc_zeros'])
     for var in common_fund_vars:
-        zero_perc = zero_perc.append(pd.DataFrame({'Variable': var,
+        zero_perc = pd.concat([zero_perc,pd.DataFrame({'Variable': var,
                                                   'perc_zeros': np.round(sum(df_work[var] == 0) / df_work.shape[0] * 100, 1)},
-                                                 index=[0]))
+                                                 index=[0])])
     zero_perc = zero_perc.sort_values('perc_zeros').reset_index(drop=True)
     zero_perc['keep'] = np.where(zero_perc['perc_zeros'] >= thrsh_zeros * 100, '', 'x')
     col_remove = zero_perc[zero_perc['keep'] == '']['Variable'].to_list()
@@ -592,7 +604,7 @@ def make_features(df_work, df_original, thrsh_zeros = 0.3, file_name = '', col_k
 
     # time stats
     time_stat = df_work.groupby(time_var).agg(matched = (time_var, lambda x: len(x)))
-    time_stat = time_stat.append(pd.DataFrame({col: time_stat[col].sum() for col in time_stat}, index=['Total'], columns=time_stat.columns))
+    time_stat = pd.concat([time_stat, pd.DataFrame({col: time_stat[col].sum() for col in time_stat}, index=['Total'], columns=time_stat.columns)])
     display(time_stat)
     
     # reset index
@@ -833,19 +845,19 @@ def fit_predict_cv_classifier(df, model=None, measure=None, cv_iterator=None, ou
         y_pred_valid = pred_list['split_'+str(split_i)]['y_pred_valid']
         y_pred_test = pred_list['split_'+str(split_i)]['y_pred_test']
 
-        df_perf = df_perf.append(evaluate_score_df(measure, true_lab_train=y_train, true_lab_valid=y_valid,
+        df_perf = pd.concat([df_perf, evaluate_score_df(measure, true_lab_train=y_train, true_lab_valid=y_valid,
                                                    true_lab_test=y_test, pred_proba_train=y_pred_train,
                                                    pred_proba_valid=y_pred_valid, pred_proba_test=y_pred_test,
-                                                   threshold=best_thresh, split_i=split_i))
+                                                   threshold=best_thresh, split_i=split_i)])
 
         if len(add_measure) > 0:
             for m in add_measure:
 
-                df_perf_add[m.__name__] = df_perf_add[m.__name__].append(
+                df_perf_add[m.__name__] = pd.concat([df_perf_add[m.__name__],
                                                 evaluate_score_df(m, true_lab_train=y_train, true_lab_valid=y_valid,
                                                                   true_lab_test=y_test, pred_proba_train=y_pred_train,
                                                                   pred_proba_valid=y_pred_valid, pred_proba_test=y_pred_test,
-                                                                  threshold=best_thresh, split_i=split_i))
+                                                                  threshold=best_thresh, split_i=split_i)])
     
     return df_perf, fitted_models, pred_list, df_perf_add
 
@@ -952,7 +964,7 @@ class Objective:
                            'eta0': trial.suggest_float('eta0', 1e-6, 1, log=True)}
         
             # define model
-            model = SGDClassifier(loss = 'log', penalty = 'elasticnet', shuffle = True,
+            model = SGDClassifier(loss = 'log_loss', penalty = 'elasticnet', shuffle = True,
                                   random_state = 666, learning_rate = 'adaptive',
                                   early_stopping = True, class_weight = 'balanced', n_jobs = -1,
                                   **tune_params)
@@ -1117,7 +1129,7 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
                                           .add_prefix(k.replace('_score', '').upper()+'.')
                                          )], axis=1) 
                 row_add.insert(0, 'pkl', pkl_path)
-                df_add = df_add.append(row_add)
+                df_add = pd.concat([df_add, row_add])
         except:
             pass
     
@@ -1130,11 +1142,11 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
 
     df_best = pd.DataFrame()
     for meas in avail_measure:
-        common_cols = set([meas+'.'+x for x in avail_set]) & set(best_row.columns)
+        common_cols = list(set([meas+'.'+x for x in avail_set]) & set(best_row.columns))
         add_df = best_row.loc[:, common_cols]
         add_df.columns = add_df.columns.str.replace(meas+'.', '', regex=True)
         add_df.insert(0, 'Performance', meas)
-        df_best = df_best.append(add_df)
+        df_best = pd.concat([df_best, add_df])
     df_best=df_best.fillna('')#.fillna(method='bfill').fillna(method='ffill')
     # df_best=df_best[[df_best.columns[df_best.columns.str.contains(x)][0] for x in ['Performance', 'thresh', 'train', 'valid', 'test']]]
     df_best=df_best[['Performance', 'best_thresh', 'train_best', 'valid_best', 'test_best', 'train_05', 'valid_05', 'test_05']]
