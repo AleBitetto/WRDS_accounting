@@ -984,7 +984,8 @@ class Objective:
         
             # save fitted models
             if self.model_save_path is not None:
-                joblib.dump({'perf': perf,
+                joblib.dump({'measure':measure,
+                             'perf': perf,
                              'fitted_model': fitted_model,
                              'pred_list': pred_list,
                              'perf_add': perf_add}, pkl_path, compress=('lzma', 3))
