@@ -984,7 +984,7 @@ class Objective:
         
             # save fitted models
             if self.model_save_path is not None:
-                joblib.dump({'measure':measure,
+                joblib.dump({'measure': self.measure,
                              'perf': perf,
                              'fitted_model': fitted_model,
                              'pred_list': pred_list,
