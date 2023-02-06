@@ -7,6 +7,7 @@ import itertools
 import functools
 import time
 import os
+import copy
 import matplotlib.pyplot as plt
 from scipy.stats.mstats import winsorize
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
@@ -21,6 +22,14 @@ from optuna.exceptions import ExperimentalWarning
 import logging
 import sys
 import joblib
+from multiprocess import Pool
+from functools import partial
+from scipy.cluster import hierarchy
+from scipy.spatial.distance import squareform
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from sklearn.feature_selection import mutual_info_classif
+import shap
+
 
 
 def summary_stats(df=None, date_format='D', n_digits=2):
@@ -775,7 +784,7 @@ def fit_predict_cv_classifier(df, model=None, measure=None, cv_iterator=None, ou
         - cv_iterator: iterator for cross-validation
         - out_of_sample_years: number of years to evaluate out-of-sample performance
         - time_var: string for year variable
-        - add_measure: list of additional performance measures (function) to be evaluated with optimal threshold.
+        - add_measure: list of additional performance measures (function) to be evaluated withptimal threshold.
         - return_model: if True returns dictionary of fitted models
         - show_split: if True only prints splits and skip everything else
         
@@ -1148,3 +1157,585 @@ def tune_hyperparameters(df, tot_trials=100, model_type='', measure=None, cv_ite
     
     return study, study_log
 
+
+def cv_performance_summary(**kwargs):
+
+    '''
+    - **kwargs: any dictionary that contains "measure", "perf" and "perf_add" returned by fit_predict_cv_classifier()
+    '''
+    
+    measure = kwargs.get('measure')
+    perf = kwargs.get('perf')
+    perf_add = kwargs.get('perf_add')
+    
+    all_measure={measure.__name__: perf}
+    all_measure.update(perf_add)
+    col_order=['best_thresh', 'train_best', 'valid_best', 'test_best', 'train_05', 'valid_05', 'test_05']
+    
+    df_out = pd.DataFrame()
+    for meas, tab in all_measure.items():
+        common_cols = [x for x in tab.columns if x in col_order]
+        if 'best_thresh' not in common_cols:
+            tab['best_thresh'] = 0
+        add_row=tab.groupby('best_thresh').agg('mean').reset_index().drop(columns='split')
+        if 'best_thresh' not in common_cols:
+            add_row['best_thresh'] = None
+        add_row.insert(0, 'Performance', meas.replace('_score', '').upper())
+        df_out=pd.concat([df_out, add_row])
+
+    df_out['best_thresh']=df_out['best_thresh'].fillna(method='bfill').fillna(method='ffill')    
+    df_out=df_out.fillna('')
+    df_out=df_out[['Performance'] + col_order]
+
+    return df_out
+
+
+class GroupVariables:
+    def __init__(self, df, time_var='fyear', n_jobs=-1, file_name='', var_description='',
+                 stats_folder='', checkpoint_folder='', tuning_folder='', groupvar_folder='', featimp_folder=''):
+        
+        '''
+        Evaluate average distance correlation over years and group variables.
+
+        Args:
+            - df: dataframe with [time_var, 'y', ....]
+            - time_var: string for year variable
+            - n_jobs: number of processes. -1 all available cores, 0 serial
+        '''
+        
+        self.df=df
+        self.time_var=time_var
+        self.n_jobs=n_jobs
+        self.file_name=file_name
+        self.var_description=var_description
+        self.stats_folder=stats_folder
+        self.checkpoint_folder=checkpoint_folder
+        self.tuning_folder=tuning_folder
+        self.groupvar_folder=groupvar_folder
+        self.featimp_folder=featimp_folder
+
+    def evaluate_distance(self, reload=False):
+        
+        pkl_path = os.path.join(self.groupvar_folder, self.file_name+'_dist_mat.pkl')
+        
+        if reload:
+            pkl_reload=joblib.load(pkl_path)
+            self.avg_dist=pkl_reload['avg_dist']
+            self.var_names=pkl_reload['var_names']
+            print('- Distance matrix reloaded from', pkl_path)
+        else:
+            years = self.df[self.time_var].unique()
+            start = timer()
+            print('- Evaluating distance matrix', end='')
+            
+            # multiprocess
+            if self.n_jobs !=0:
+                print(' with Multiprocess...')
+                n_processes = None if self.n_jobs == -1 else self.n_jobs
+                p=Pool(n_processes)
+                results=p.imap_unordered(partial(GroupVariables._distance_mp, df=self.df, time_var=self.time_var), years)                
+            # serial
+            else:
+                print(' without Multiprocess...')
+                mat_list=[]
+                msg_list=[]
+                for year in years:
+                    dist, out_message = GroupVariables._distance_mp(year, df=self.df, time_var=self.time_var)
+                    mat_list.append(dist)
+                    msg_list.append(out_message)
+                results=zip(mat_list, msg_list)
+                del mat_list, msg_list
+            
+            # average over years
+            matrix_list=[]    
+            for dist, out_message in results:
+                if out_message:
+                    print('\n'.join(out_message))
+                matrix_list.append(squareform(dist))
+            avg_dist=np.stack(matrix_list, axis=0).mean(axis=0)
+            del matrix_list
+            print('Elapsed time:', str(datetime.timedelta(seconds=round(timer()-start))))
+            
+            var_names = self.df.drop(columns=[self.time_var, 'y']).columns.tolist()
+            
+            # save pkl
+            joblib.dump({'avg_dist': avg_dist, 'var_names': var_names}, pkl_path, compress=('lzma', 3))
+            print('\n- Distance matrix pickle saved to', pkl_path)
+
+            self.avg_dist=avg_dist
+            self.var_names=var_names            
+    
+    def plot_dendro(self, fig_size=(8, 12)):
+        
+        self.dist_linkage=GroupVariables._plot_dendro(dist_mat=self.avg_dist, var_names=self.var_names, fig_size=fig_size)
+    
+    def test_variables_groups(self, model_type='LightGBM', find_cluster_range=[2,3], reload=False):
+    
+        print('\n- Testing different number of groups for all variables - Started at:', datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+
+        # reload best model and configuration
+        pkl_path = [x for x in os.listdir(self.tuning_folder) if x.startswith(f'{self.file_name}_{model_type}') and x.endswith('.pkl')][0]
+        study_path = [x for x in os.listdir(self.tuning_folder) if x.startswith(f'{self.file_name}_{model_type}') and x.endswith('.csv')][0]
+        pkl_reload = joblib.load(os.path.join(self.tuning_folder, pkl_path))
+        study_name=pkl_reload['study_name']
+        measure=pkl_reload['measure']
+        cv_iterator=pkl_reload['cv_iterator']
+        out_of_sample_years=pkl_reload['out_of_sample_years']
+        add_measure=pkl_reload['add_measure']
+        optim_measure=pkl_reload['optim_measure']
+        study_log=pd.read_csv(os.path.join(self.tuning_folder, study_path), sep=';')
+        study_log=study_log[study_log['best_par'] == 'x']
+        best_mod_reload=joblib.load(study_log['pkl'].values[0])
+        best_model=best_mod_reload['fitted_model']['split_0']
+
+        # evaluate model performance for each number of clusters (variables)
+        df_perf_cluster=pd.DataFrame()
+        best_variables_log={}
+        start=timer()
+        for i, num_clust in enumerate(range(find_cluster_range[0], find_cluster_range[1]+1)):
+
+            print(f'   Grouping in {num_clust} clusters ({i+1}/{find_cluster_range[1] - find_cluster_range[0] + 1})',
+                  '   Last update at:', datetime.datetime.now().strftime("%H:%M:%S"), end='\r')
+
+            # evaluate clusters
+            cluster_ids = hierarchy.fcluster(self.dist_linkage, num_clust, criterion="maxclust")
+            cluster_dict={}
+            for cl in np.unique(cluster_ids):
+                cluster_dict[str(cl)]=[self.var_names[i] for i in np.where(cluster_ids == cl)[0]]
+
+            # select best variable in each cluster according to mutual information gain with target variable
+            # https://scikit-learn.org/stable/modules/generated/sklearn.feature_selection.mutual_info_classif.html
+            mi_path=os.path.join(self.groupvar_folder,
+                                    self.file_name+'_'+model_type+'_'+measure.__name__+'_'+str(num_clust)+'_mutualInfo.pkl')
+            if not reload or not os.path.exists(mi_path):
+                best_variables=[]
+                mi_log={}
+                for cl, var in cluster_dict.items():
+                    df_t = self.df.copy()[[self.time_var, 'y'] + var]
+                    mi = mutual_info_classif(X=df_t.drop(columns=[self.time_var, 'y']), y=df_t['y'],
+                                             discrete_features='auto', n_neighbors=3, copy=False, random_state=666)
+                    best_variables.append(var[np.argmax(mi)])
+                    mi_log[str(cl)] = dict(zip(var, mi))
+                    del df_t
+                save_dict={'best_variables': best_variables, 'cluster_dict': cluster_dict, 'mutual_information': mi_log}
+                joblib.dump(save_dict, mi_path)
+            else:
+                save_dict=joblib.load(mi_path)
+                best_variables=save_dict['best_variables']
+            best_variables_log[str(num_clust)+' cluster']=save_dict
+
+            # evaluate model performance on dataset with best variables only
+            df_featimp = self.df.copy()[[self.time_var, 'y'] + best_variables]    
+
+            if model_type == 'RandomForest':   # adapt max_features to new set of variables
+                best_model.set_params(**{'max_features': int(best_model.max_features / self.df.shape[1] * df_featimp.shape[1])})
+
+            clust_path=os.path.join(self.groupvar_folder,
+                                    self.file_name+'_'+model_type+'_'+measure.__name__+'_'+str(num_clust)+'.pkl')
+            if not reload or not os.path.exists(clust_path):
+                perf, fitted_model, pred_list, perf_add = fit_predict_cv_classifier(df=df_featimp, model=best_model, measure=measure,
+                                                              cv_iterator=cv_iterator, out_of_sample_years=out_of_sample_years,
+                                                              time_var=self.time_var, add_measure=add_measure, return_model=False)
+                perf_t=cv_performance_summary(measure=measure, perf=perf, perf_add=perf_add)
+                perf_t=perf_t[perf_t['Performance']==measure.__name__.replace('_score', '').upper()][['best_thresh', optim_measure]]
+                perf_t.insert(0, 'Model', str(num_clust)+' cluster')
+                joblib.dump(perf_t, clust_path)
+            else:
+                perf_t=joblib.load(clust_path)
+
+            df_perf_cluster=pd.concat([df_perf_cluster, perf_t])
+
+        print('\n   Elapsed time:', str(datetime.timedelta(seconds=round(timer()-start))))
+
+        # compare performance on "optim_measure"
+        perf_best=cv_performance_summary(**best_mod_reload)
+        perf_best=perf_best[perf_best['Performance']==measure.__name__.replace('_score', '').upper()][['best_thresh', optim_measure]]
+        perf_best.insert(0, 'Model', 'All variables')
+        df_perf_cluster=pd.concat([perf_best, df_perf_cluster])
+        df_perf_cluster.insert(1, 'Performance', measure.__name__.replace('_score', '').upper())
+        df_perf_cluster['diff']=df_perf_cluster[optim_measure]-df_perf_cluster[df_perf_cluster['Model']=='All variables'][optim_measure]
+        df_perf_cluster.loc[df_perf_cluster['Model']=='All variables', 'diff']=9999
+        df_perf_cluster.sort_values(by='diff', ascending=False, inplace=True)
+        df_perf_cluster.loc[df_perf_cluster['Model']=='All variables', 'diff']=''
+
+        # save results
+        save_path=os.path.join(self.groupvar_folder, self.file_name+'_dist_mat_cluster_variables.pkl')
+        joblib.dump({'df_perf_cluster': df_perf_cluster, 'cluster_dict': cluster_dict}, save_path)
+        print('\n- Cluster pickle saved to', save_path)
+
+        display(df_perf_cluster)
+
+        self.df_perf_cluster=df_perf_cluster
+        self.best_variables_log=best_variables_log
+        self.model_type=model_type
+        self.optim_measure=optim_measure
+    
+    def select_groups(self, num_cluster=5, save_prefix='01c_'):
+
+        # recall performance
+        perf=self.df_perf_cluster['Performance'].values[0]
+        perf_pre=np.round(self.df_perf_cluster[self.df_perf_cluster['Model'] == 'All variables'][self.optim_measure].values[0], 3)
+        perf_post=np.round(self.df_perf_cluster[self.df_perf_cluster['Model'] == str(num_cluster)+' cluster'][self.optim_measure].values[0], 3)
+
+        best_variables=self.best_variables_log[str(num_cluster)+' cluster']['best_variables']
+        cluster_dict=self.best_variables_log[str(num_cluster)+' cluster']['cluster_dict']
+        df_group=pd.DataFrame()
+        for cl, var in cluster_dict.items():
+            df_t=pd.DataFrame({'Variable': var, 'Group': cl})
+            mi_dict=self.best_variables_log[str(num_cluster)+' cluster']['mutual_information'][cl]
+            df_t=df_t.merge(pd.DataFrame(mi_dict.items(), columns=['Variable', 'Mutual Information']), on='Variable', how='left')
+            df_t['Selected']=np.where(df_t['Variable'].isin(best_variables), 'x', '')
+            df_t.sort_values(by='Mutual Information', ascending=False, inplace=True)
+            df_group=pd.concat([df_group, df_t])
+        
+        # add variables description
+        var_descr=pd.read_csv(os.path.join(self.stats_folder, self.var_description), sep=';')[['VARIABLE', 'Description']]
+        df_group=df_group.merge(var_descr, how='left', left_on='Variable', right_on='VARIABLE').drop(columns='VARIABLE')
+
+        # print info
+        print(f'- {num_cluster} groups of variables selected:\n')
+        for index, row in df_group[df_group.Selected == 'x'].iterrows():
+            print(f"   '{row['Variable']}': {row['Description']}")
+        print(f'\n- {perf} changed from {perf_pre} (all variables) to {perf_post}')
+        
+        # save csv with groups
+        save_path=os.path.join(self.stats_folder, f'{save_prefix}{self.file_name}_variables_groups.csv')
+        df_group.to_csv(save_path, index=False, sep=';')
+        print('\n- List of groups of variables saved to', save_path)
+
+        self.best_variables=best_variables
+
+        return best_variables
+    
+    def train_model(self, reload=False, select_variables=[]):
+        
+        # reload best model and configuration
+        pkl_path = [x for x in os.listdir(self.tuning_folder) if x.startswith(f'{self.file_name}_{self.model_type}') and x.endswith('.pkl')][0]
+        study_path = [x for x in os.listdir(self.tuning_folder) if x.startswith(f'{self.file_name}_{self.model_type}') and x.endswith('.csv')][0]
+        pkl_reload = joblib.load(os.path.join(self.tuning_folder, pkl_path))
+        study_name=pkl_reload['study_name']
+        measure=pkl_reload['measure']
+        cv_iterator=pkl_reload['cv_iterator']
+        out_of_sample_years=pkl_reload['out_of_sample_years']
+        add_measure=pkl_reload['add_measure']
+        optim_measure=pkl_reload['optim_measure']
+        study_log=pd.read_csv(os.path.join(self.tuning_folder, study_path), sep=';')
+        study_log=study_log[study_log['best_par'] == 'x']
+        best_mod_reload=joblib.load(study_log['pkl'].values[0])
+        best_model=best_mod_reload['fitted_model']['split_0']
+
+        # select best variables
+        if not select_variables:
+            best_variables=self.best_variables
+        else:
+            best_variables=select_variables
+        
+        # evaluate model performance on dataset with best variables only
+        df_featimp = self.df.copy()[[self.time_var, 'y'] + best_variables]    
+
+        if self.model_type == 'RandomForest':   # adapt max_features to new set of variables
+            best_model.set_params(**{'max_features': int(best_model.max_features / self.df.shape[1] * df_featimp.shape[1])})
+
+        model_path=os.path.join(self.featimp_folder,
+                                self.file_name+'_'+self.model_type+'_model_for_explainer.pkl')
+        if not reload or not os.path.exists(model_path):
+            perf, fitted_model, pred_list, perf_add = fit_predict_cv_classifier(df=df_featimp, model=best_model, measure=measure,
+                                                          cv_iterator=cv_iterator, out_of_sample_years=out_of_sample_years,
+                                                          time_var=self.time_var, add_measure=add_measure, return_model=True)
+            perf_summ=cv_performance_summary(measure=measure, perf=perf, perf_add=perf_add)
+            perf_summ=perf_summ[perf_summ['Performance']==measure.__name__.replace('_score', '').upper()][['best_thresh', optim_measure]]
+            joblib.dump({'fitted_model': fitted_model, 'perf_summ': perf_summ, 'out_of_sample_years': out_of_sample_years,
+                         'time_var': self.time_var, 'cv_iterator': cv_iterator, 'best_variables': best_variables}, model_path)
+        else:
+            load_t=joblib.load(model_path)
+            fitted_model=load_t['fitted_model']
+            perf_summ=load_t['perf_summ']
+
+        perf=self.df_perf_cluster['Performance'].values[0]
+        perf_post=np.round(perf_summ[self.optim_measure].values[0], 3)
+        print(f'- Fitted model {perf}: {perf_post}')
+        print('\n- Fitted model pickle saved to', model_path)
+        
+    @staticmethod
+    def _distance_mp(year, df, time_var='fyear'):
+    
+        '''
+        Evaluates distance correlation for multiprocessing. Returns dist in vector format, to be passed to squareform()
+        https://dcor.readthedocs.io/en/latest/theory.html
+        https://en.wikipedia.org/wiki/Distance_correlation
+        '''    
+    
+        from scipy.spatial.distance import pdist
+        from dcor import u_distance_correlation_sqr
+        from scipy.spatial.distance import squareform
+        import numpy as np
+
+        out_message=[]
+
+        # evaluate unbiased SQUARED distance correlation
+        dist=pdist(df[df[time_var] == year].drop(columns=[time_var, 'y']).values.T, lambda x,y: u_distance_correlation_sqr(x, y))
+        # replace distance with constant variable with 1 (max distance)
+        dist=np.nan_to_num(dist, nan=1)
+        # replace negative distance close to 0 with 0
+        if dist.min() < 0:
+            out_message.append(f'Negative value found in {year}: {dist.min()} - Replacing with 0')
+            dist[dist < 0] = 0
+        # square root
+        dist=np.sqrt(dist)
+        # check nan
+        if np.isnan(dist).sum() > 0:
+            out_message.append(f'NaN values still present in {year}')
+        # check range
+        if dist.min() < 0 or dist.max() > 1:
+            out_message.append(f'Error in range for {year}: min={dist.min()}  max={dist.max()}')
+
+        return dist, out_message
+    
+    @staticmethod
+    def _plot_dendro(dist_mat, var_names, fig_size=(8, 12)):
+    
+        from scipy.cluster.hierarchy import ClusterWarning
+        from warnings import simplefilter
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=fig_size)
+
+        simplefilter("ignore", ClusterWarning)
+        dist_linkage = hierarchy.ward(dist_mat)
+        dendro = hierarchy.dendrogram(
+            dist_linkage, labels=var_names, ax=ax1, leaf_rotation=90
+        )
+        dendro_idx = np.arange(0, len(dendro["ivl"]))
+
+        cmap=plt.cm.viridis
+        im2=ax2.imshow(dist_mat[dendro["leaves"], :][:, dendro["leaves"]], cmap=cmap)
+        ax2.set_xticks(dendro_idx)
+        ax2.set_yticks(dendro_idx)
+        ax2.set_xticklabels(dendro["ivl"], rotation="vertical")
+        ax2.set_yticklabels(dendro["ivl"])
+        divider = make_axes_locatable(ax2)
+        cax = divider.append_axes('right', size='5%', pad=0.08)
+        fig.colorbar(im2, cax=cax, orientation='vertical')
+        fig.tight_layout()
+        plt.show()
+
+        return dist_linkage
+    
+
+class FeatureImportance:
+    def __init__(self, df, df_orig=None, var_display_name=None, file_name='', featimp_folder=''):
+        
+        '''
+        Evaluate feature importance using SHAP.
+
+        Args:
+            - df: dataframe with [time_var, 'y', ....]
+            - df_orig: dataframe of variables to be used for x-axis distribution. If df has been scaled, takes original values
+                        for the variables. If None is set equal to df
+            - var_display_name: dictionary of {'original_variable_name': 'name to show on plot'} 
+        '''
+        
+        self.df=df
+        self.df_orig=df_orig
+        self.var_display_name=var_display_name
+        self.file_name=file_name
+        self.featimp_folder=featimp_folder
+
+    def eval_shap_values(self, model_type='LightGBM', reload=False):
+
+        pkl_path=os.path.join(self.featimp_folder, self.file_name+'_'+model_type+'_shap_values.pkl')
+        
+        if not reload or not os.path.exists(pkl_path):
+        
+            # reload model
+            model_path=os.path.join(self.featimp_folder, self.file_name+'_'+model_type+'_model_for_explainer.pkl')
+            t_mod = joblib.load(model_path)
+            cv_iterator=t_mod['cv_iterator']
+            out_of_sample_years=t_mod['out_of_sample_years']
+            time_var=t_mod['time_var']
+            best_variables=t_mod['best_variables']
+
+            # evaluate out-of-sample
+            avail_year = np.sort(self.df[time_var].unique())
+            year_to_remove = avail_year[-out_of_sample_years:] 
+
+            df_fit = self.df.copy()[~self.df[time_var].isin(year_to_remove)]  # skip year_to_remove, keep in mind .iloc is used below. Used to isolate test set
+
+            shap_log={}
+            for split_i, (train_idx, valid_idx) in enumerate(cv_iterator.split(df_fit)):
+
+                # create test set (out-of-sample)
+                year_test_start = np.where(avail_year == df_fit[time_var].iloc[valid_idx].max())[0][0] + 1
+                test_idx = np.where(self.df[time_var].isin(avail_year[year_test_start:(year_test_start+out_of_sample_years)]))[0]
+                X_test = self.df.drop(columns=['y', time_var]).iloc[test_idx][best_variables]    # test_idx is extracted from df, wih .iloc
+                y_test = self.df['y'].iloc[test_idx]
+                year_test_lab = ','.join(np.sort(self.df[time_var].iloc[test_idx].unique()).astype(str))
+                print(f'- Evaluating SHAP on: {year_test_lab} ({len(test_idx)} obs)')
+
+                # select fitted model and run explainer
+                model=t_mod['fitted_model']['split_'+str(split_i)]
+                explainer = shap.explainers.Tree(model, X_test, model_output='probability')
+                shap_values = explainer(X_test)
+                
+                # recall original values of input variables (used for interaction plot)
+                if self.df_orig is not None:
+                    data_orig=self.df_orig[self.df_orig['main_index'].isin(y_test.index.values)][shap_values.feature_names]
+                    for col in data_orig.columns: # winsorize
+                        data_orig[col] = winsorize(data_orig[col], limits=[0.01, 0.01])
+                    data_orig=data_orig.to_numpy()
+                else:
+                    data_orig=shap_values.data
+            
+                shap_log['split_'+str(split_i)]={'year_lab': year_test_lab, 'shap_values': shap_values,
+                                                 'y': y_test, 'data_orig': data_orig}
+
+            # stack shap values for all test set together
+            all_splits_lab=','.join([v['year_lab'] for v in shap_log.values()])
+            shap_values_all=copy.copy(shap_log['split_0']['shap_values'])
+            expected_obs=sum([v['shap_values'].values.shape[0] for v in shap_log.values()])
+            y_all=copy.copy(shap_log['split_0']['y'])
+            data_orig_all=copy.copy(shap_log['split_0']['data_orig'])
+            for i in range(1, split_i+1):
+                shap_values_all.values = np.vstack([shap_values_all.values, shap_log['split_'+str(i)]['shap_values'].values])
+                shap_values_all.base_values = np.hstack([shap_values_all.base_values, shap_log['split_'+str(i)]['shap_values'].base_values])
+                shap_values_all.data = np.vstack([shap_values_all.data, shap_log['split_'+str(i)]['shap_values'].data])
+                y_all=pd.concat([y_all, shap_log['split_'+str(i)]['y']], axis=0)
+                data_orig_all = np.vstack([data_orig_all, shap_log['split_'+str(i)]['data_orig']])
+            shap_log['split_all']={'year_lab': all_splits_lab, 'shap_values': shap_values_all, 'y': y_all, 'data_orig': data_orig_all}
+
+            if shap_values_all.values.shape[0] + shap_values_all.base_values.shape[0] + shap_values_all.data.shape[0] != expected_obs*3:
+                print('\n ######## stacked "shap_values_all" rows do not match expected number')
+
+            # save pickle
+            joblib.dump(shap_log, pkl_path, compress=('lzma', 3))
+            
+        else:
+            shap_log=joblib.load(pkl_path)
+
+        print('\n- SHAP values pickle saved to', pkl_path)
+        
+        self.model_type=model_type
+        self.shap_log=shap_log
+        
+    def plot_bar(self):
+
+        '''
+        Plot average absolute SHAP importance
+        '''
+
+        for split in self.shap_log.keys():
+
+            year_lab = self.shap_log[split]['year_lab']
+            shap_values = copy.copy(self.shap_log[split]['shap_values'])
+            y = self.shap_log[split]['y']
+
+            if self.var_display_name is not None:
+                shap_values.feature_names=[self.var_display_name[var] for var in shap_values.feature_names]
+            cohort_var = np.where(y == 1, "EPS Increase", "EPS Decrease").tolist()
+            fig=plt.figure()
+            ax = fig.add_subplot(111)
+            shap.plots.bar(shap_values.cohorts(cohort_var).abs.mean(0), show=False, max_display=shap_values.shape[1])
+            ax.set_title(f'SHAP absolute importance for year {year_lab}', fontsize=20)
+            ax.set_xlabel("Average absolute impact on predicted probability", fontsize=15)
+            save_lab=year_lab if split != 'split_all' else 'All'
+            fig.savefig(os.path.join(self.featimp_folder, '00_'+self.file_name+'_'+self.model_type+'SHAP_importance_'+save_lab+'.png'),
+                        bbox_inches='tight', dpi=300)
+            
+            if split != 'split_all':
+                plt.close()
+        
+        print(f'- Plot saved in {self.featimp_folder}\n')
+        plt.show()
+
+    def plot_swarm(self):
+
+        '''
+        Plot SHAP importance swarmplot
+        '''
+
+        for split in self.shap_log.keys():
+
+            year_lab = self.shap_log[split]['year_lab']
+            shap_values = copy.copy(self.shap_log[split]['shap_values'])
+
+            if self.var_display_name is not None:
+                shap_values.feature_names=[self.var_display_name[var].replace('\n', ' ') for var in shap_values.feature_names]
+            fig=plt.figure()
+            ax = fig.add_subplot(111)
+            shap.plots.beeswarm(shap_values, show=False, max_display=shap_values.shape[1])
+            ax.set_title(f'SHAP contribution for year {year_lab}\n', fontsize=20)
+            ax.set_xlabel("Impact on predicted probability", fontsize=15)
+            save_lab=year_lab if split != 'split_all' else 'All'
+            fig.savefig(os.path.join(self.featimp_folder, '01_'+self.file_name+'_'+self.model_type+'SHAP_swarm_'+save_lab+'.png'),
+                        bbox_inches='tight', dpi=300)
+            
+            if split != 'split_all':
+                plt.close()
+        
+        print(f'- Plot saved in {self.featimp_folder}\n')
+
+        plt.show()
+        
+    def plot_interactions(self, top_features=5, custom_features=[], multirow_label=True, alpha=0.7):
+
+        '''
+        Args:
+            - top_features: (int) number of features to use, sorted by average absolute SHAP
+            - custom_features: (list) if not [], list of variables to be used for the interactions. Overrides top_features
+            - multirow_label: if False, '\n' in features names (if any) will be replaced with ' '
+        '''
+
+        for split in self.shap_log.keys():
+
+            year_lab = self.shap_log[split]['year_lab']
+            shap_values = copy.copy(self.shap_log[split]['shap_values'])
+            y = self.shap_log[split]['y']
+            data_orig=self.shap_log[split]['data_orig']
+
+            # set original values of input variables
+            shap_values.data=data_orig
+
+            # select variables to compare
+            if len(custom_features) > 0:
+                work_features=custom_features
+            else:
+                var_idx=shap_values.abs.mean(0).argsort[-top_features:].values.tolist()[::-1]
+                work_features=[shap_values.feature_names[i] for i in var_idx]
+
+            # adjust names
+            if self.var_display_name is not None:
+                var_display_name_t=copy.copy(self.var_display_name)
+                if not multirow_label:
+                    var_display_name_t={k: v.replace('\n', ' ') for k, v in var_display_name_t.items()}
+                shap_values.feature_names=[var_display_name_t[var] for var in shap_values.feature_names]
+            else:
+                var_display_name_t=dict(zip(work_features, work_features))
+
+            cc=1
+            for i in range(len(work_features)):
+                for j in range(len(work_features)):
+                    
+                    if i != j:
+
+                        i_var_lab=work_features[i]
+                        j_var_lab=work_features[j]
+                        i_var_new=[v for k, v in var_display_name_t.items() if k == i_var_lab][0]
+                        j_var_new=[v for k, v in var_display_name_t.items() if k == j_var_lab][0]
+
+                        shap.plots.scatter(shap_values[:, i_var_new], color=shap_values[:, j_var_new], alpha=alpha, show=False)
+                        ax = plt.gca()
+                        ax.set_title(f'SHAP interaction for year {year_lab}\n', fontsize=20)
+                        ax.set_ylabel(f'SHAP value for\n{i_var_new}')
+                        save_lab=year_lab if split != 'split_all' else 'All'
+                        plt.savefig(os.path.join(self.featimp_folder,'02_'+self.file_name+'_'+self.model_type+
+                                                 'SHAP_interaction_'+str(cc).zfill(2)+'_'+i_var_lab+'_'+j_var_lab+'_'+save_lab+'.png'),
+                                    bbox_inches='tight', dpi=300)
+                        cc+=1
+
+                        if i != 0 or split != 'split_all':
+                            plt.close()                    
+
+        print(f'- Plot saved in {self.featimp_folder}\n')
+
+        plt.show()
+
+        
